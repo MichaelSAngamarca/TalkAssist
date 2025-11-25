@@ -1,0 +1,13 @@
+requests
+python-dotenv
+langchain-community
+elevenlabs
+openai
+pyaudio
+pyttsx3
+numpy
+apscheduler
+whisper
+pydoc
+re
+word2number
