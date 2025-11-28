@@ -262,6 +262,8 @@ def run_offline_mode_thread():
                 conversation_ended_event.set()
     except Exception as e:
         print(f"Error during offline mode: {e}")
+        import traceback
+        traceback.print_exc()
         # Only set event if we're still in offline mode AND not switching modes
         with mode_lock:
             if current_mode == 'offline' and not switching_modes.is_set():
@@ -384,16 +386,17 @@ def stop_current_mode():
                 offline_to_stop = offline_mode_instance
                 thread_to_join = mode_thread
                 
-                # Clear global reference first
+                # Set stop event first to signal offline mode to stop
+                if offline_to_stop:
+                    offline_to_stop.stop()
+                
+                # Clear global reference
                 offline_mode_instance = None
                 current_mode = None
                 
-                # Now safely stop offline mode
-                offline_to_stop.stop()
-                
                 # Wait for thread to finish
                 if thread_to_join and thread_to_join.is_alive():
-                    thread_to_join.join(timeout=5)  # Increased timeout
+                    thread_to_join.join(timeout=3)
                     if thread_to_join.is_alive():
                         print("Warning: Offline mode thread did not finish in time")
                 
@@ -517,8 +520,8 @@ def start_offline_mode():
             print("Waiting for previous mode thread to finish...")
             mode_thread.join(timeout=2)
         
-        # Additional cleanup pause
-        time.sleep(0.3)
+        # Additional cleanup pause to ensure online mode is fully stopped
+        time.sleep(0.5)
         
         print("\n" + "="*60)
         print("Switching to OFFLINE mode")
@@ -529,15 +532,14 @@ def start_offline_mode():
         
         # Clear any lingering events before starting new mode
         conversation_ended_event.clear()
+        switching_modes.clear()  # Clear switching flag before starting
         
         mode_thread = threading.Thread(target=run_offline_mode_thread, daemon=True)
         mode_thread.start()
         print("Offline mode started successfully.")
         
-        # Clear event again after a brief moment to catch any immediate thread events
-        time.sleep(0.2)
-        conversation_ended_event.clear()
-        switching_modes.clear()  # Clear flag after mode switch is complete
+        # Give offline mode a moment to initialize
+        time.sleep(0.3)
 
 def monitor_connectivity():
     """Monitor connectivity and switch modes as needed."""
@@ -551,17 +553,20 @@ def monitor_connectivity():
         try:
             is_connected = check_internet_connectivity()
             
+            # Check for connectivity changes more frequently
             if last_connectivity is not None and is_connected != last_connectivity:
                 if is_connected:
                     print("\n✓ Internet connection detected!")
                     # Switch to online mode if we're offline or not in any mode
-                    if current_mode == 'offline' or current_mode is None:
-                        start_online_mode()
+                    with mode_lock:
+                        if current_mode == 'offline' or current_mode is None:
+                            start_online_mode()
                 else:
                     print("\n✗ Internet connection lost!")
                     # Switch to offline mode if we're online or not in any mode
-                    if current_mode == 'online' or current_mode is None:
-                        start_offline_mode()
+                    with mode_lock:
+                        if current_mode == 'online' or current_mode is None:
+                            start_offline_mode()
             
             elif last_connectivity is None:
                 if is_connected:
@@ -574,8 +579,8 @@ def monitor_connectivity():
             last_connectivity = is_connected
             
             # Check if conversation ended naturally (not due to mode switch)
-            # Only break if the event is set AND we're not in any mode AND not switching modes
-            if conversation_ended_event.wait(timeout=5):
+            # Use shorter timeout to check connectivity more frequently
+            if conversation_ended_event.wait(timeout=2):
                 # Double-check the mode after the event is set (with lock to avoid race conditions)
                 with mode_lock:
                     # Event was set (wait returned True), now check mode and switching flag before clearing
@@ -598,7 +603,9 @@ def monitor_connectivity():
             
         except Exception as e:
             print(f"Error in connectivity monitoring: {e}")
-            time.sleep(5)
+            import traceback
+            traceback.print_exc()
+            time.sleep(2)
 
 # Start Flask
 def start_flask_server(host="0.0.0.0", port=5001):
