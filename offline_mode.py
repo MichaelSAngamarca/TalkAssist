@@ -52,123 +52,71 @@ class OfflineMode:
     def speak(self, text):
         # This function is to convert text to speech
         print(f"TalkAssist: {text}")
-        print(f"DEBUG: speak() called with text: {text}")
-        
         # Try to use GUI TTS first (non-blocking)
         gui_speak_called = False
         try:
             import sys
-            print(f"DEBUG: Checking for GUI instance in sys.modules...")
             main_module = sys.modules.get('main')
             if main_module:
-                print(f"DEBUG: main module found: {main_module}")
                 if hasattr(main_module, 'gui_instance'):
-                    print(f"DEBUG: main module has gui_instance attribute")
                     gui = getattr(main_module, 'gui_instance')
-                    print(f"DEBUG: gui_instance value: {gui}")
                     if gui:
-                        print("DEBUG: GUI instance found, adding message and speaking...")
                         try:
                             gui.add_bot_message(text)
-                            print("DEBUG: Message added to GUI")
-                        except Exception as e:
-                            print(f"DEBUG: Error adding message to GUI: {e}")
-                            import traceback
-                            traceback.print_exc()
+                        except:
+                            pass
                         
                         try:
                             # Use GUI TTS to avoid duplicate audio (non-blocking)
                             gui.speak(text, self.tts_rate, self.tts_volume)
                             gui_speak_called = True
-                            print("DEBUG: GUI.speak() called successfully, returning immediately")
-                        except Exception as e:
-                            print(f"DEBUG: Error calling GUI.speak(): {e}")
-                            import traceback
-                            traceback.print_exc()
+                        except:
+                            pass
                         
                         if gui_speak_called:
-                            print("DEBUG: Returning from speak() - GUI TTS handling audio")
-                            return  # GUI handles TTS, so we don't need to do it here
-                    else:
-                        print("DEBUG: gui_instance is None or False")
-                else:
-                    print("DEBUG: main module does not have gui_instance attribute")
-            else:
-                print("DEBUG: main module not found in sys.modules")
-        except Exception as e:
-            print(f"DEBUG: Exception checking for GUI: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # Fallback to local TTS if GUI not available or failed - run in thread to avoid blocking
-        print("DEBUG: Using fallback TTS (GUI not available or failed) - running in thread")
+                            return
+        except:
+           pass
         
         # Wait for previous TTS thread to finish before starting a new one
         if self._tts_thread and self._tts_thread.is_alive():
-            print(f"DEBUG: Previous TTS thread is alive, waiting for it to finish...")
             # Wait longer for previous TTS to complete
             self._tts_thread.join(timeout=15)  # Wait up to 15 seconds (TTS can take time)
-            if self._tts_thread.is_alive():
-                print("DEBUG: WARNING: Previous TTS thread still alive after timeout")
-            else:
-                print("DEBUG: Previous TTS thread finished")
-        
-        # Add a small delay to ensure any lingering engine cleanup happens
         time.sleep(0.3)
         
         def _speak_fallback():
             # Use lock inside the thread to ensure only one TTS operation at a time
             with self._tts_lock:
-                print("DEBUG: _speak_fallback() thread function started (lock acquired)")
                 engine = None
                 try:
                     # Always create a fresh engine to avoid "run loop already started" error
-                    print("DEBUG: Creating new TTS engine for this speech...")
                     # Use 'sapi5' driver explicitly on Windows to avoid conflicts
                     try:
                         engine = pyttsx3.init(driverName='sapi5')
-                        print("DEBUG: TTS engine created with SAPI5 driver")
-                    except Exception as driver_error:
+                    except:
                         # Fallback to default if sapi5 fails
-                        print(f"DEBUG: SAPI5 driver failed ({driver_error}), trying default...")
                         engine = pyttsx3.init()
-                        print("DEBUG: TTS engine created with default driver")
                     
                     engine.setProperty('rate', self.tts_rate)
                     engine.setProperty('volume', self.tts_volume)
-                    
-                    print(f"DEBUG: Speaking text: {text}")
                     engine.say(text)
-                    print("DEBUG: Starting TTS playback (runAndWait)...")
                     engine.runAndWait()
-                    print("DEBUG: TTS playback completed")
                     engine.stop()
-                    print("DEBUG: Fallback TTS completed successfully")
-                except Exception as e:
-                    print(f"TTS Error in fallback thread: {e}")
-                    import traceback
-                    traceback.print_exc()
+                except:
+                    pass
                 finally:
                     # Clean up engine completely
                     if engine is not None:
                         try:
-                            print("DEBUG: Cleaning up TTS engine...")
                             engine.stop()
                             # Give it a moment to fully stop
                             time.sleep(0.1)
                             del engine
-                        except Exception as cleanup_error:
-                            print(f"DEBUG: Error during cleanup: {cleanup_error}")
-                print("DEBUG: _speak_fallback() thread function exiting (releasing lock)")
-        
-        # Start TTS in a daemon thread so it doesn't block
-        print("DEBUG: Creating TTS thread...")
-        self._tts_thread = threading.Thread(target=_speak_fallback, daemon=True, name="TTSThread")
-        print("DEBUG: Starting TTS thread...")
+                        except:
+                            pass
+        self._tts_thread = threading.Thread(target=_speak_fallback, daemon=True)
         self._tts_thread.start()
-        print(f"DEBUG: TTS thread started (is_alive={self._tts_thread.is_alive()}), speak() returning immediately")
-        
-        print("DEBUG: speak() returning")
+
 
     def check_audio_level(self, audio_data):
         #checking the volume level of audio data
@@ -329,9 +277,7 @@ class OfflineMode:
         # for time queries
         if any (word in text_lower for word in ["time", "what's the time", "current time", "tell me the time", "time now", "what time is it", "can you tell me the time"]):
             current_time = datetime.now().strftime("%I:%M %p")
-            print(f"DEBUG: About to speak time: {current_time}")
             self.speak(f"The current time is {current_time}")
-            print("DEBUG: Finished speaking time, returning True")
             return True
         # for date queries
         if any (word in text_lower for word in ["date", "what's the date", "current date", "what day is today", "tell me the date", "what is today", "what day is it", "can you tell me the date"]):
@@ -340,7 +286,7 @@ class OfflineMode:
             return True
         
          #getting the list of reminders
-        if any (word in text_lower for word in ["list reminders", "show reminders", "what are my reminders", "my reminders"]):
+        if any (word in text_lower for word in ["list reminders", "show reminders", "what are my reminders", "my reminders", "list reminder"]):
             self.list_reminders()
             return True
         
@@ -809,26 +755,23 @@ class OfflineMode:
         iteration = 0
         while not self._stop_event.is_set() and self.is_running:
             iteration += 1
-            print(f"DEBUG: Loop iteration {iteration} - stop_event={self._stop_event.is_set()}, is_running={self.is_running}")
+            #print(f"DEBUG: Loop iteration {iteration} - stop_event={self._stop_event.is_set()}, is_running={self.is_running}")
             
             try:
                 # Check stop event before listening
                 if self._stop_event.is_set():
-                    print("DEBUG: Stop event is set before listen(), breaking loop")
                     break
                 
                 if not self.is_running:
-                    print("DEBUG: is_running is False before listen(), breaking loop")
                     break
                 
                 # Debug output to show we're about to listen
-                print("DEBUG: Starting to listen for next input...")
                 
                 try:
                     user_text = self.listen()
-                    print(f"DEBUG: listen() returned: '{user_text}'")
+                    #print(f"DEBUG: listen() returned: '{user_text}'")
                 except Exception as listen_error:
-                    print(f"DEBUG: Error in listen(): {listen_error}")
+                    #print(f"DEBUG: Error in listen(): {listen_error}")
                     import traceback
                     traceback.print_exc()
                     user_text = ""  # Set to empty string to continue loop
@@ -840,13 +783,11 @@ class OfflineMode:
 
                 if not user_text or user_text.strip() == "":
                     # Empty input - continue listening (don't break the loop)
-                    print("DEBUG: Empty input received, continuing to listen...")
                     continue
 
-                print(f"DEBUG: Processing command: {user_text}")
+                #print(f"DEBUG: Processing command: {user_text}")
                 try:
                     should_continue = self.process_command(user_text)
-                    print(f"DEBUG: process_command returned: {should_continue}")
                     
                     # Give TTS a moment to start (especially important for GUI TTS)
                     time.sleep(0.3)
@@ -859,7 +800,6 @@ class OfflineMode:
 
                 # Verify we should continue before checking the flag
                 if not should_continue:
-                    print("DEBUG: Command indicated we should stop (user said goodbye)")
                     conversation_ended_naturally = True
                     # Stop the loop to allow cleanup
                     self._stop_event.set()
@@ -868,15 +808,12 @@ class OfflineMode:
                 
                 # Re-check stop event after processing (in case something set it during processing)
                 if self._stop_event.is_set():
-                    print("DEBUG: Stop event was set during command processing, breaking loop")
                     break
                     
                 if not self.is_running:
-                    print("DEBUG: is_running was set to False during command processing, breaking loop")
                     break
                 
                 # Explicitly continue to next iteration
-                print("DEBUG: Command processed successfully, continuing to next iteration...")
                 continue
                 
             except KeyboardInterrupt:

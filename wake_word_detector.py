@@ -17,8 +17,8 @@ class WakeWordDetector:
         self.RATE = 16000
         
         self.listen_duration = 3.0
-        self.silence_threshold = 200
-        self.min_volume = 30
+        self.silence_threshold = 120
+        self.min_volume = 20
         
         self._stop_event = threading.Event()
     
@@ -82,7 +82,9 @@ class WakeWordDetector:
         
         avg_volume = total_volume / num_chunks if num_chunks > 0 else 0
         
-        if avg_volume < self.min_volume or not speech_detected or num_chunks < min_speech_chunks:
+        if (
+            avg_volume < self.min_volume or not speech_detected or num_chunks < min_speech_chunks
+        ):
             return ""
         
         audio_data = b''.join(frames)
@@ -94,8 +96,10 @@ class WakeWordDetector:
         
         try:
             result = self.whisper_model.transcribe(audio_np, language="en", fp16=False)
-            text = result['text'].strip().lower()
-            return text
+            raw_text = (result.get('text', '')).strip().lower()
+            normalized= re.sub(r"[^a-z\s]", '', raw_text)
+            normalized = re.sub(r'\s+', ' ', normalized).strip()
+            return normalized
         except Exception as e:
             print(f"Transcription error: {e}")
             return ""
@@ -105,15 +109,17 @@ class WakeWordDetector:
             return False
         
         text_lower = text.lower().strip()
+        normalized= re.sub(r"[^a-z\s]", '', text_lower)
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
         
-        if self.wake_phrase in text_lower:
+        if self.wake_phrase in text_lower or self.wake_phrase in normalized:
             return True
         
         for variation in self.wake_words['variations']:
-            if variation in text_lower:
+            if variation in text_lower or variation in normalized:
                 return True
         
-        words = text_lower.split()
+       
         key_words = self.wake_words['key_words']
         
         if all(word in text_lower for word in key_words):
@@ -122,15 +128,15 @@ class WakeWordDetector:
                 if max(indices) - min(indices) < 50:
                     return True
         
-        variations = [
+        patterns = [
             r'hey\s+talk\s+assist',
             r'hey\s+talkassist',
             r'hey\s+talk\s+assistant',
             r'hey\s+talk\s+assists',
         ]
         
-        for pattern in variations:
-            if re.search(pattern, text_lower):
+        for pattern in patterns:
+            if re.search(pattern, normalized):
                 return True
         
         return False
