@@ -197,66 +197,75 @@ class TimeParser:
     
     # get the time form the text, then return datetime.time object or none "4pm", "16:30", "4:30"
     def _extract_time(self, text):
-        # pattern 1: "10:30am" , "10.30 pm" 
-        pattern2 = r'(\d{1,2})[:.](\d{2})\s*(am|pm|a\.m\.|p\.m\.)'
-        match = re.search(pattern2, text)
+        from datetime import datetime
+        text = text.lower()
+
+        # A: "10:30am", "10.30 pm"
+        pattern_a = r'(\d{1,2})[:.](\d{2})\s*(am|pm|a\.m\.|p\.m\.)'
+        match = re.search(pattern_a, text)
         if match:
             hour = int(match.group(1))
             minute = int(match.group(2))
             meridien = match.group(3).lower()
-            if 'pm' in meridien or 'p.m' in meridien:
-                if hour != 12:
-                    hour += 12
-            elif 'am' in meridien or 'a.m' in meridien:
-                if hour == 12:
-                    hour = 0
+            if 'pm' in meridien and hour != 12:
+                hour += 12
+            if 'am' in meridien and hour == 12:
+                hour = 0
             if 0 <= hour < 24 and 0 <= minute < 60:
                 return datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
-        # pattern 1: "10am", "10 am", "10pm"
-        pattern1= r'(\d{1,2})\s*(am|pm|a\.m\.|p\.m\.)'
-        match = re.search(pattern1, text)
-        if match:
-            hour = int(match.group(1))
-            meridien = match.group(2).lower()
-            if 'pm' in meridien or 'p.m' in meridien:
-                if hour != 12:
-                    hour += 12
-            elif 'am' in meridien or 'a.m' in meridien:
-                if hour == 12:
-                    hour = 0
-            if 0 <= hour < 24:
-                return datetime.strptime(f"{hour}:00", "%H:%M").time()
-            
-        pattern_b = r'(\d{1,2})\s+(\d{2})\s*(am|pm|a\.m\.|p\.m\.)'
+
+        # B: "1 15 am"  (hour + space + minutes + am/pm)
+        pattern_b = r'\b(\d{1,2})\s+(\d{2})\s*(am|pm|a\.m\.|p\.m\.)\b'
         match = re.search(pattern_b, text)
         if match:
-            hour = int(match.group(1)); minute = int(match.group(2))
+            hour = int(match.group(1))
+            minute = int(match.group(2))
             meridien = match.group(3).lower()
-            if 'pm' in meridien and hour != 12: hour += 12
-            if 'am' in meridien and hour == 12: hour = 0
+            if 'pm' in meridien and hour != 12:
+                hour += 12
+            if 'am' in meridien and hour == 12:
+                hour = 0
             if 0 <= hour < 24 and 0 <= minute < 60:
                 return datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
-            
+
+        # C: "115 am", "0230 pm"
         pattern_c = r'\b(\d{3,4})\s*(am|pm|a\.m\.|p\.m\.)\b'
         match = re.search(pattern_c, text)
         if match:
-            raw = int(match.group(1)); hour, minute = raw // 100, raw % 100
+            raw = int(match.group(1))
+            hour, minute = raw // 100, raw % 100
             meridien = match.group(2).lower()
-            if 'pm' in meridien and hour != 12: hour += 12
-            if 'am' in meridien and hour == 12: hour = 0
+            if 'pm' in meridien and hour != 12:
+                hour += 12
+            if 'am' in meridien and hour == 12:
+                hour = 0
             if 0 <= hour < 24 and 0 <= minute < 60:
                 return datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
-            
 
-        # pattern 3: for 24 hour format: 16:45, 8:00
-        pattern3 = r'(\d{1,2})[:.](\d{2})(?!\s*[ap]\.?m\.?)'
-        match = re.search(pattern3, text)
+        # D: "10am", "10 am", "10pm"
+        pattern_d = r'\b(\d{1,2})\s*(am|pm|a\.m\.|p\.m\.)\b'
+        match = re.search(pattern_d, text)
+        if match:
+            hour = int(match.group(1))
+            meridien = match.group(2).lower()
+            if 'pm' in meridien and hour != 12:
+                hour += 12
+            if 'am' in meridien and hour == 12:
+                hour = 0
+            if 0 <= hour < 24:
+                return datetime.strptime(f"{hour}:00", "%H:%M").time()
+
+        # E: 24-hour "16:45", "8.00" without am/pm
+        pattern_e = r'(\d{1,2})[:.](\d{2})(?!\s*[ap]\.?m\.?)'
+        match = re.search(pattern_e, text)
         if match:
             hour = int(match.group(1))
             minute = int(match.group(2))
             if 0 <= hour < 24 and 0 <= minute < 60:
                 return datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
+
         return None
+
     
     def format_time_human(self, dt):
         now = datetime.now()
