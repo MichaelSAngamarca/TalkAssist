@@ -57,10 +57,16 @@ class MathParser:
         words = text_low.split()
         converted = []
         for w in words:
-            try:
-                converted.append(str(w2n.word_to_num(w)))
-            except ValueError:
+            if w in {"+", "-", "*", "/"}:
                 converted.append(w)
+                continue
+            clean = re.sub(r"[^\w-]", "", w)
+            if not clean:
+                continue
+            try:
+                converted.append(str(w2n.word_to_num(clean)))
+            except ValueError:
+                converted.append(clean)
 
         #Clean expression
         expr = " ".join(converted)

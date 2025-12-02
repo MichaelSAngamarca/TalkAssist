@@ -17,6 +17,11 @@ from hotkey_handler import HotkeyHandler
 from apscheduler.schedulers.background import BackgroundScheduler
 #from app import app
 from werkzeug.serving import make_server
+#from reminder_store import REMINDERS_FILE, REMINDERS_LOCK
+
+
+reminders_file = "reminders.json"
+reminders_lock = threading.Lock()
 
 # GUI support (optional)
 gui_instance = None
@@ -112,57 +117,92 @@ flask_server = None
 switching_modes = threading.Event()  # Flag to indicate we're in the middle of switching modes
 
 # Initialize reminder scheduler and load existing reminders
-reminder_scheduler = BackgroundScheduler()
+job_defaults = {'coalesce': True, 'max_instances': 3}
+reminder_scheduler = BackgroundScheduler(job_defaults=job_defaults)
 reminder_scheduler.start()
 
-# Load existing reminders into scheduler
 def load_existing_reminders():
     """Load existing reminders from JSON and schedule them."""
     import json
     import os
     from datetime import datetime
-    
-    reminders_file = "reminders.json"
-    if os.path.exists(reminders_file):
-        try:
-            with open(reminders_file, 'r') as f:
+
+    if not os.path.exists(reminders_file):
+        return
+
+    try:
+        # 🔒 Read the reminders file under the lock
+        with reminders_lock:
+            with open(reminders_file, 'r', encoding='utf-8') as f:
                 reminders = json.load(f)
-            
-            def trigger_reminder(reminder_id, reminder_text):
-                reminder_msg = f"Reminder: {reminder_text}"
-                speak(reminder_msg)
-                # Update GUI if available
-                global gui_instance
-                if gui_instance:
-                    gui_instance.add_bot_message(reminder_msg)
-                # Mark as inactive
-                if os.path.exists(reminders_file):
-                    with open(reminders_file, 'r') as f:
-                        reminders = json.load(f)
-                    for r in reminders:
-                        if r['id'] == reminder_id:
-                            r['active'] = False
-                    with open(reminders_file, 'w') as f:
-                        json.dump(reminders, f, indent=4)
-            
-            now = datetime.now()
-            for reminder in reminders:
-                if reminder.get("active", True):
+
+        def trigger_reminder(reminder_id, reminder_text):
+            """Called by APScheduler when a reminder fires."""
+            reminder_msg = f"Reminder: {reminder_text}"
+            speak(reminder_msg)
+
+            # Update GUI if available
+            global gui_instance
+            if gui_instance:
+                gui_instance.add_bot_message(reminder_msg)
+
+            # 🔒 Mark this reminder inactive in reminders.json
+            if os.path.exists(reminders_file):
+                try:
+                    with reminders_lock:
+                        with open(reminders_file, 'r', encoding='utf-8') as f:
+                            current = json.load(f)
+                        for r in current:
+                            if r.get('id') == reminder_id:
+                                r['active'] = False
+                        with open(reminders_file, 'w', encoding='utf-8') as f:
+                            json.dump(current, f, indent=4)
+                except Exception as e:
+                    print(f"Error marking reminder {reminder_id} inactive: {e}")
+
+        now = datetime.now()
+        changed = False
+
+        for reminder in reminders:
+            if reminder.get("active", True):
+                try:
                     reminder_time = datetime.fromisoformat(reminder['time'])
-                    if reminder_time > now:
-                        job_id = f"reminder_{reminder['id']}"
-                        try:
-                            reminder_scheduler.add_job(
-                                trigger_reminder,
-                                'date',
-                                run_date=reminder_time,
-                                args=[reminder['id'], reminder['text']],
-                                id=job_id
-                            )
-                        except Exception as e:
-                            print(f"Error scheduling reminder {reminder['id']}: {e}")
-        except Exception as e:
-            print(f"Error loading reminders: {e}")
+                except Exception as e:
+                    print(f"Skipping reminder {reminder.get('id')}: bad time {reminder.get('time')}, {e}")
+                    continue
+
+                if reminder_time > now:
+                    # Future reminder → schedule it
+                    job_id = f"reminder_{reminder['id']}"
+                    try:
+                        reminder_scheduler.add_job(
+                            trigger_reminder,
+                            'date',
+                            run_date=reminder_time,
+                            args=[reminder['id'], reminder['text']],
+                            id=job_id,
+                            replace_existing=True,  # avoid ID conflicts if we reload
+                        )
+                    except Exception as e:
+                        print(f"Error scheduling reminder {reminder['id']}: {e}")
+                else:
+                    # Past reminder still marked active → mark inactive (missed reminder)
+                    reminder['active'] = False
+                    changed = True
+
+        # 🔒 If we changed any reminders (e.g., marking missed ones inactive), write back once
+        if changed:
+            try:
+                with reminders_lock:
+                    with open(reminders_file, 'w', encoding='utf-8') as f:
+                        json.dump(reminders, f, indent=4)
+            except Exception as e:
+                print(f"Error updating reminders file: {e}")
+
+    except Exception as e:
+        print(f"Error loading existing reminders: {e}")
+
+
 
 load_existing_reminders()
 

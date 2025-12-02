@@ -28,3 +28,7 @@ Don't need to ask the Bot to do calculations, simply speak a math question and i
 
 HOW TO BUILD APPLICATION
 To build talk assist you must run the following command in the working directory. .\build_exe.bat this will build the application.
+
+# added on december 1
+now support online reminder and GUI TTS queue fixed
+now you can set reminder using the online mode.

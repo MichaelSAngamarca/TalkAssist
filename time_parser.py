@@ -120,18 +120,80 @@ class TimeParser:
         return None, False, "Could not understand the time. Try formmats like '2 hours', 'tomorrow at 1pm', or 'monday at 1pm'"
 
     def _convert_words_to_numbers(self, text):
-        # Convert word numbers to digit
+        text = text.lower()
+
+        small = {
+            'zero': 0, 'oh': 0,
+            'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            'six': 6, 'seven': 7, 'eight': 8, 'nine': 9,
+            'ten': 10, 'eleven': 11, 'twelve': 12,
+        }
+
+        tens = {
+            'twenty': 20, 'thirty': 30, 'forty': 40, 'fifty': 50,
+        }
+
+        # "eight oh five pm" -> "8:05 pm"
+        pattern_oh = (
+            r'\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+'
+            r'(oh|zero)\s+'
+            r'(one|two|three|four|five|six|seven|eight|nine)\s*'
+            r'(am|pm|a\.m\.|p\.m\.)\b'
+        )
+
+        def repl_oh(m):
+            hour = small[m.group(1)]
+            minute = small[m.group(3)]
+            mer = m.group(4)
+            return f"{hour}:{minute:02d} {mer}"
+
+        text = re.sub(pattern_oh, repl_oh, text)
+
+        #"eight thirty five pm" -> "8:35 pm"
+        pattern_tens_ones = (
+            r'\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+'
+            r'(twenty|thirty|forty|fifty)\s+'
+            r'(one|two|three|four|five|six|seven|eight|nine)\s*'
+            r'(am|pm|a\.m\.|p\.m\.)\b'
+        )
+
+        def repl_tens_ones(m):
+            hour = small[m.group(1)]
+            minute = tens[m.group(2)] + small[m.group(3)]
+            mer = m.group(4)
+            return f"{hour}:{minute:02d} {mer}"
+
+        text = re.sub(pattern_tens_ones, repl_tens_ones, text)
+
+        # "eight forty pm" -> "8:40 pm", "eight thirty pm" -> "8:30 pm"
+        pattern_tens_only = (
+            r'\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+'
+            r'(twenty|thirty|forty|fifty)\s*'
+            r'(am|pm|a\.m\.|p\.m\.)\b'
+        )
+
+        def repl_tens_only(m):
+            hour = small[m.group(1)]
+            minute = tens[m.group(2)]
+            mer = m.group(3)
+            return f"{hour}:{minute:02d} {mer}"
+
+        text = re.sub(pattern_tens_only, repl_tens_only, text)
+
+        #After normalizing special phrases, we fall back to simple word = digit replacement
+
         word_to_num = {
             'one': '1', 'two': '2', 'three': '3', 'four': '4', 'five': '5',
             'six': '6', 'seven': '7', 'eight': '8', 'nine': '9', 'ten': '10',
             'eleven': '11', 'twelve': '12', 'fifteen': '15', 'twenty': '20',
             'thirty': '30', 'forty': '40', 'fifty': '50', 'sixty': '60'
         }
-    
+
         for word, num in word_to_num.items():
             text = text.replace(word, num)
-        
+
         return text
+
     
     # get the time form the text, then return datetime.time object or none "4pm", "16:30", "4:30"
     def _extract_time(self, text):

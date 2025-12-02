@@ -1,11 +1,14 @@
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from elevenlabs.conversational_ai.conversation import ClientTools
 from langchain_community.tools import DuckDuckGoSearchRun
 from connectivity_checker import check_internet_connectivity, safe_api_call
 import time
+import json
+from time_parser import TimeParser
+
 load_dotenv()
 def handle_api_failure(error_msg, fallback_msg="I'm sorry, I'm having trouble connecting to the internet. Please check your connection and try again."):
     
@@ -185,6 +188,114 @@ def save_to_txt(parameters):
         return f"Data saved to {filename}"
     except Exception as e:
         return f"Error saving file: {e}"
+    
+
+   # this is a fuction for the online mode to set rmeinders and store them in a json file like the offline mode
+def set_reminder(parameters):
+    reminder_text = (parameters.get("text") or parameters.get("reminder") or parameters.get("task") or parameters.get("description") or parameters.get("title"))
+    when = parameters.get("time")   or parameters.get("when")
+
+    if not reminder_text:
+        return "I could not find what the reminder should be about"
+    if not when:
+        return "I need to know when to schedule the reminder"
+    parser = TimeParser()
+    reminder_time = None
+    try:
+        reminder_time = datetime.fromisoformat(when)
+        success = True
+        error = None
+    except Exception:
+        reminder_time = None
+        success = False
+        error = None
+    if reminder_time is None:
+        try:
+            parsed_time, success, error = parser.parse_time(when)
+            reminder_time = parsed_time if success else None
+        except Exception as e:
+            reminder_time = None
+            success = False
+            error = str(e)
+    if reminder_time is None:
+        msg = f"I could not understand the time '{when}'."
+        if error:
+            msg += f" Error: {error}"
+        return msg + "Please try something like 'in 10 minutes' or 'tomorrow at 10 AM'."
+    now = datetime.now()
+    if reminder_time < now:
+       reminder_time = now + timedelta(minutes=5)
+    reminders_file = "reminders.json"
+    reminders = []
+    if os.path.exists(reminders_file):
+        try:
+            with open(reminders_file, "r", encoding="utf-8") as file:
+                reminders = json.load(file)
+        except Exception:
+            reminders = []
+
+    existing_ids = [r.get("id", 0) for r in reminders if isinstance(r, dict)]
+    next_id = (max(existing_ids) if existing_ids else 0) + 1
+
+    new_reminder = {
+        "id": next_id,
+        "text": reminder_text,
+        "time": reminder_time.isoformat(),
+        "active": True,
+    }
+    reminders.append(new_reminder)
+    try:
+        with open(reminders_file, "w", encoding="utf-8") as file:
+            json.dump(reminders, file, indent=4)
+        #return f"Reminder set for {reminder_time.strftime('%Y-%m-%d %H:%M:%S')}: {reminder_text}"
+    except Exception as e:
+        return f"Sory, I could not save the reminder: {e}"
+    try:
+        import main
+        if hasattr(main, "load_existing_reminders"):
+            main.load_existing_reminders()
+    except Exception as e:
+         print(f"Warning: Could not reschedule reminders from set_reminder_tool: {e}")
+    human_time = reminder_time.strftime("%I:%M %p on %B %d, %Y")
+    return f"Okay, I'll remind you at {human_time}: {reminder_text}"
+
+def list_reminders(parameters):
+    reminders_file = "reminders.json"
+    if not os.path.exists(reminders_file):
+        return "You have no reminders set."
+    try:   
+        with open(reminders_file, "r", encoding="utf-8") as file:
+            reminders = json.load(file)
+    except Exception as e:
+        return f"Sorry, I couldn't read your reminders: {e}"
+    
+    reminders = [r for r in reminders if r.get("active", True)]
+    if not reminders:
+        return "You have no reminders set."
+    
+    try:
+        reminders.sort(key=lambda r: datetime.fromisoformat(r["time"]))
+    except Exception:
+        pass
+    lines = []
+    for r in reminders:
+        text = r.get("text", "No description")
+        time_str = r.get("time", "No time set")
+        #active = r.get("active", True)
+        try: 
+            dt = datetime.fromisoformat(time_str)
+            friendly_time = dt.strftime("%I:%M %p on %B %d, %Y")
+        except Exception:
+            friendly_time = time_str or "Invalid time format"
+        #status = "active" if active else "inactive"
+        lines.append(f"- {text} at {friendly_time}")
+    if len(reminders) == 1:
+        prefix = "You have one active reminder:\n"
+    else:
+        prefix = f"You have {len(reminders)} active reminders:\n"
+
+    return prefix + "\n".join(lines)
+    
 
 client_tools = ClientTools()
 client_tools.register("searchWeb", search_web)
@@ -193,3 +304,5 @@ client_tools.register("getCurrentTime", get_current_time)
 client_tools.register("getRegionInfo", get_region_info)
 client_tools.register("getWeatherInfo",get_weather_info)
 client_tools.register("getDateInfo", get_date_info)
+client_tools.register("setReminder", set_reminder)
+client_tools.register("listReminders", list_reminders)

@@ -17,6 +17,8 @@ import time
 from time_parser import TimeParser
 import re
 from math_parser import MathParser
+
+reminders_lock = threading.Lock()
 class OfflineMode:
     def __init__(self):
         print ("loading the whisper model...")
@@ -28,7 +30,8 @@ class OfflineMode:
         self.math_parser = MathParser()
         self.time_parser = TimeParser()
         # initializing the scheduler here
-        self.scheduler = BackgroundScheduler()
+        job_defaults = {"coalesce": True, "max_instances": 3}
+        self.scheduler = BackgroundScheduler(job_defaults=job_defaults)
         self.scheduler.start()
         self.CHUNK = 1024
         self.FORMAT = pyaudio.paInt16
@@ -66,7 +69,7 @@ class OfflineMode:
                         except:
                             pass
                         
-                        try:
+                        """try:
                             # Use GUI TTS to avoid duplicate audio (non-blocking)
                             gui.speak(text, self.tts_rate, self.tts_volume)
                             gui_speak_called = True
@@ -74,13 +77,12 @@ class OfflineMode:
                             pass
                         
                         if gui_speak_called:
-                            return
+                            return"""
         except:
            pass
         
         # Wait for previous TTS thread to finish before starting a new one
         if self._tts_thread and self._tts_thread.is_alive():
-            # Wait longer for previous TTS to complete
             self._tts_thread.join(timeout=15)  # Wait up to 15 seconds (TTS can take time)
         time.sleep(0.3)
         
@@ -89,8 +91,7 @@ class OfflineMode:
             with self._tts_lock:
                 engine = None
                 try:
-                    # Always create a fresh engine to avoid "run loop already started" error
-                    # Use 'sapi5' driver explicitly on Windows to avoid conflicts
+                    # Using 'sapi5' driver explicitly on Windows to avoid conflicts
                     try:
                         engine = pyttsx3.init(driverName='sapi5')
                     except:
@@ -109,7 +110,6 @@ class OfflineMode:
                     if engine is not None:
                         try:
                             engine.stop()
-                            # Give it a moment to fully stop
                             time.sleep(0.1)
                             del engine
                         except:
@@ -153,7 +153,7 @@ class OfflineMode:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    def listen(self, max_duration=7, silence_duration=3.5):
+    def listen(self, max_duration=7, silence_duration=2.0):
          # is able to record audio with automatic silence detection. Will stp recording after silence_durantion seconds of silence
         audio = pyaudio.PyAudio()
         stream = audio.open(
@@ -330,16 +330,25 @@ class OfflineMode:
         return True
     
     def _load_existing_reminders(self):
-        """Load existing reminders from JSON and schedule them."""
+        """Load existing reminders and schedule only future active ones.
+        Any active reminders whose time is already in the past are marked inactive.
+        """
         if os.path.exists(self.reminders_file):
             try:
-                with open(self.reminders_file, 'r') as f:
-                    reminders = json.load(f)
+                with reminders_lock:
+                    with open(self.reminders_file, 'r', encoding='utf-8') as f:
+                        reminders = json.load(f)
                 
                 now = datetime.now()
+                changed = False
                 for reminder in reminders:
                     if reminder.get("active", True):
-                        reminder_time = datetime.fromisoformat(reminder['time'])
+                        try:
+                            reminder_time = datetime.fromisoformat(reminder['time'])
+                        except Exception as e:
+                            print(f"Skipping reminder {reminder.get('id')}: bad time value {reminder.get('time')}, {e}")
+                            continue
+
                         if reminder_time > now:
                             job_id = f"reminder_{reminder['id']}"
                             try:
@@ -348,12 +357,25 @@ class OfflineMode:
                                     'date',
                                     run_date=reminder_time,
                                     args=[reminder['id'], reminder['text']],
-                                    id=job_id
+                                    id=job_id,
+                                    replace_existing=True,
                                 )
                             except Exception as e:
-                                print(f"Error scheduling reminder {reminder['id']}: {e}")
+                                print(f"Error scheduling reminder {reminder.get('id')}: {e}")
+                        else:
+                            reminder["active"] = False
+                            changed = True
+
+                if changed:
+                    try:
+                        with reminders_lock:
+                            with open(self.reminders_file, 'w', encoding='utf-8') as f:
+                                json.dump(reminders, f, indent=4)
+                    except Exception as e:
+                        print(f"Error  updating overdue reminders: {e}")
             except Exception as e:
                 print(f"Error loading reminders: {e}")
+
     
     def _extract_task_from_text(self, text):
         """Extract the task description from text, removing time information."""
@@ -390,15 +412,16 @@ class OfflineMode:
     
     def set_reminder(self, text):
         """Set a reminder from natural language text."""
+        with reminders_lock:
         # Load existing reminders
-        if os.path.exists(self.reminders_file):
-            try:
-                with open(self.reminders_file, 'r') as f:
-                    reminders = json.load(f)
-            except:
+            if os.path.exists(self.reminders_file):
+                try:
+                    with open(self.reminders_file, 'r') as f:
+                        reminders = json.load(f)
+                except:
+                    reminders = []
+            else:
                 reminders = []
-        else:
-            reminders = []
         
         # Clean and preprocess text
         raw_lower = text.lower().strip()
@@ -408,7 +431,7 @@ class OfflineMode:
         trigger_prefix = re.compile(
             r'^(?:'
             r'remind\s+me(?:\s+to)?'
-            r'|set\s+(?:a\s+)?reminder(?:\s+to)?'
+            r'|set\s+(?:a\s+|the\s+)?reminder(?:\s+to)?'
             r'|remember\s+to'
             r'|we\s+(?:need|have)\s+to'
             r')\s+',
@@ -457,8 +480,9 @@ class OfflineMode:
         
         # Write to JSON file
         try:
-            with open(self.reminders_file, 'w') as f:
-                json.dump(reminders, f, indent=4)
+            with reminders_lock:
+                with open(self.reminders_file, 'w') as f:
+                    json.dump(reminders, f, indent=4)
         except Exception as e:
             print(f"Error saving reminder: {e}")
             self.speak("Sorry, I couldn't save the reminder.")
@@ -467,12 +491,14 @@ class OfflineMode:
         # Schedule reminder
         job_id = f"reminder_{reminder_id}"
         try:
+           
             self.scheduler.add_job(
                 self.trigger_reminder,
                 'date',
                 run_date=reminder_time,
                 args=[reminder_id, reminder_text],
-                id=job_id
+                id=job_id,
+                replace_existing=True,
             )
         except Exception as e:
             print(f"Error scheduling reminder: {e}")
@@ -688,13 +714,14 @@ class OfflineMode:
         # Mark as inactive
         if os.path.exists(self.reminders_file):
             try:
-                with open(self.reminders_file, 'r') as f:
-                    reminders = json.load(f)
-                for r in reminders:
-                    if r['id'] == reminder_id:
-                        r['active'] = False
-                with open(self.reminders_file, 'w') as f:
-                    json.dump(reminders, f, indent=4)
+                with reminders_lock:
+                    with open(self.reminders_file, 'r') as f:
+                        reminders = json.load(f)
+                    for r in reminders:
+                        if r['id'] == reminder_id:
+                            r['active'] = False
+                    with open(self.reminders_file, 'w') as f:
+                        json.dump(reminders, f, indent=4)
             except:
                 pass
 
@@ -705,8 +732,9 @@ class OfflineMode:
             return
         
         try:
-            with open(self.reminders_file, 'r') as f:
-                reminders = json.load(f)
+            with reminders_lock:    
+                with open(self.reminders_file, 'r', encoding="utf-8") as f:
+                    reminders = json.load(f)
         except:
             self.speak("Error loading reminders.")
             return
@@ -720,15 +748,23 @@ class OfflineMode:
         if not active_reminders:
             self.speak("You have no active reminders.")
             return
-        
-        active_reminders.sort(key=lambda r: datetime.fromisoformat(r['time']))
-        count = len(active_reminders)
-        
-        self.speak(f"You have {count} active reminder{'s' if count > 1 else ''}")
-        for i, reminder in enumerate(active_reminders, 1):
-            reminder_time = datetime.fromisoformat(reminder['time'])
-            time_str = reminder_time.strftime("%I:%M %p on %B %d")
-            self.speak(f"Reminder {i} at {time_str}: {reminder['text']}")
+        active_reminders.sort(key=lambda r: datetime.fromisoformat(r["time"]))
+        parts = []
+        for r in active_reminders:
+            text = r.get('text', 'No description')
+            time_str = r.get('time', '')
+            try:
+                dt = datetime.fromisoformat(time_str)
+                friendly_time = dt.strftime("%I:%M %p on %B %d, %Y")
+            except Exception:
+                friendly_time = time_str or "an unknown time"
+            parts.append(f"{text} at {friendly_time}")
+        if len(active_reminders) == 1:
+            msg = "You have 1 active reminder: " + parts[0]
+        else:
+            msg = f"You have {len(active_reminders)} active reminders: " + "; ".join(parts)
+        self.speak(msg)
+        return msg
 
     def run(self):
         print("\n" + "="*60)
@@ -764,6 +800,10 @@ class OfflineMode:
                 
                 if not self.is_running:
                     break
+
+                if self._tts_thread and self._tts_thread.is_alive():
+                    time.sleep(0.1)
+                    continue
                 
                 # Debug output to show we're about to listen
                 

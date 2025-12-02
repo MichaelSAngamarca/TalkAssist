@@ -3,6 +3,7 @@ import pyaudio
 import numpy as np
 import re
 import threading
+from difflib import SequenceMatcher
 
 class WakeWordDetector:
     def __init__(self, wake_phrase="hey talk assist", model_size="base"):
@@ -35,6 +36,9 @@ class WakeWordDetector:
                 'talk assist',
             ]
         }
+    
+    def _similar(self, a, b):
+        return SequenceMatcher(None, a, b).ratio()
     
     def check_audio_level(self, audio_data):
         audio_np = np.frombuffer(audio_data, dtype=np.int16)
@@ -139,6 +143,11 @@ class WakeWordDetector:
             if re.search(pattern, normalized):
                 return True
         
+        candidates = [self.wake_phrase] + self.wake_words['variations']
+        for candidate in candidates:
+            similarity = self._similar(normalized, candidate)
+            if similarity >= 0.7:
+                return True
         return False
     
     def wait_for_wake_word(self, verbose=True):
