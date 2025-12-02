@@ -1,49 +1,19 @@
 [
     {
         "id": 1,
-        "text": "Call dad",
-        "time": "2025-12-03T15:00:00",
-        "active": true
+        "text": "sleep",
+        "time": "2025-11-28T23:00:00",
+        "active": false
     },
     {
         "id": 2,
-        "text": "call dad for",
-        "time": "2025-12-03T15:00:00",
+        "text": "Call dad",
+        "time": "2025-12-03T09:00:00",
         "active": true
     },
     {
         "id": 3,
-        "text": "Call my dad",
-        "time": "2025-12-02T16:00:00",
-        "active": true
-    },
-    {
-        "id": 4,
-        "text": "Call my dad",
-        "time": "2025-12-02T16:00:00",
-        "active": true
-    },
-    {
-        "id": 5,
-        "text": "Call my dad",
-        "time": "2025-12-02T16:00:00",
-        "active": true
-    },
-    {
-        "id": 6,
-        "text": "Call my dad",
-        "time": "2025-12-02T16:00:00",
-        "active": true
-    },
-    {
-        "id": 7,
-        "text": "can you send a reminder to call my dad for",
-        "time": "2025-12-03T15:00:00",
-        "active": true
-    },
-    {
-        "id": 8,
-        "text": "i reminded him to call dad for",
+        "text": "can you set a reminder for to call dad",
         "time": "2025-12-03T15:00:00",
         "active": true
     }
