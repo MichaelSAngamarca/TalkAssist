@@ -14,11 +14,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import json
 import threading
 import time
+import queue
 from time_parser import TimeParser
 import re
 from math_parser import MathParser
-
-reminders_lock = threading.Lock()
 class OfflineMode:
     def __init__(self):
         print ("loading the whisper model...")
@@ -30,8 +29,7 @@ class OfflineMode:
         self.math_parser = MathParser()
         self.time_parser = TimeParser()
         # initializing the scheduler here
-        job_defaults = {"coalesce": True, "max_instances": 3}
-        self.scheduler = BackgroundScheduler(job_defaults=job_defaults)
+        self.scheduler = BackgroundScheduler()
         self.scheduler.start()
         self.CHUNK = 1024
         self.FORMAT = pyaudio.paInt16
@@ -47,14 +45,244 @@ class OfflineMode:
         self._tts_engine = None
         self._tts_lock = threading.Lock()
         self._tts_thread = None
+        self._last_spoken_text = ""  # Track last spoken text for wait time estimation
+        
+        # Queue-based TTS for more reliable operation
+        self._tts_queue = queue.Queue()
+        self._tts_worker_thread = None
+        self._tts_worker_running = False
         
         # Load existing reminders into scheduler
         self._load_existing_reminders()
         self.is_running = False
+        
+        # Start TTS worker thread
+        self._start_tts_worker()
+    
+    def _start_tts_worker(self):
+        """Start the TTS worker thread that processes TTS queue."""
+        if self._tts_worker_thread and self._tts_worker_thread.is_alive():
+            return  # Already running
+        
+        self._tts_worker_running = True
+        import threading as th
+        is_daemon_context = th.current_thread().daemon if hasattr(th.current_thread(), 'daemon') else False
+        
+        def _tts_worker():
+            # Initialize COM for Windows (required for SAPI5) - MUST be done FIRST
+            com_initialized = False
+            try:
+                import pythoncom
+                # Use CoInitializeEx for better control
+                try:
+                    pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
+                    com_initialized = True
+                except:
+                    # Fallback to regular CoInitialize
+                    pythoncom.CoInitialize()
+                    com_initialized = True
+            except ImportError:
+                pass
+            except Exception as e:
+                pass
+            
+            engine = None
+            items_processed = 0
+            try:
+                while self._tts_worker_running:
+                    try:
+                        # Get text from queue with timeout
+                        try:
+                            text = self._tts_queue.get(timeout=1.0)
+                            items_processed += 1
+                        except queue.Empty:
+                            continue
+                        
+                        if text is None:  # Shutdown signal
+                            break
+                        
+                        # Create a fresh engine for each speech (recommended for threading)
+                        # This avoids issues with reusing engines across threads
+                        current_engine = None
+                        task_marked_done = False
+                        try:
+                            # Ensure COM is initialized before creating engine
+                            if not com_initialized:
+                                try:
+                                    import pythoncom
+                                    pythoncom.CoInitialize()
+                                    com_initialized = True
+                                except:
+                                    pass
+                            
+                            try:
+                                current_engine = pyttsx3.init(driverName='sapi5')
+                            except Exception as init_error:
+                                try:
+                                    current_engine = pyttsx3.init()
+                                except Exception as e:
+                                    self._tts_queue.task_done()
+                                    continue
+                            
+                            # Set properties
+                            current_engine.setProperty('rate', self.tts_rate)
+                            current_engine.setProperty('volume', self.tts_volume)
+                            
+                            # Speak the text
+                            current_engine.say(text)
+                            
+                            # Use startLoop/iterate instead of runAndWait for better thread compatibility
+                            # This approach works better when COM is initialized in the thread
+                            start_time = time.time()
+                            try:
+                                # Start the loop (False = non-blocking)
+                                current_engine.startLoop(False)
+                                
+                                # Iterate until speech is complete - optimized for speed
+                                max_iterations = 3000  # Safety limit
+                                iteration = 0
+                                speech_started = False
+                                consecutive_no_loop = 0
+                                
+                                while iteration < max_iterations:
+                                    # Check if loop is still running
+                                    in_loop = hasattr(current_engine, '_inLoop') and current_engine._inLoop
+                                    
+                                    if not in_loop:
+                                        consecutive_no_loop += 1
+                                        # If loop has been inactive for a few checks, speech is done
+                                        if consecutive_no_loop >= 3:
+                                            break
+                                    else:
+                                        consecutive_no_loop = 0
+                                    
+                                    # Iterate the loop (only if still in loop)
+                                    if in_loop:
+                                        current_engine.iterate()
+                                    
+                                    # After a few iterations, speech should have started
+                                    if iteration == 3 and in_loop:
+                                        speech_started = True
+                                    
+                                    iteration += 1
+                                    # Reduced sleep for faster iteration (only sleep every few iterations)
+                                    if iteration % 5 == 0:
+                                        time.sleep(0.005)  # Very small delay, only every 5th iteration
+                                
+                                # End the loop
+                                try:
+                                    current_engine.endLoop()
+                                except:
+                                    pass
+                                
+                                elapsed = time.time() - start_time
+                            except Exception as run_err:
+                                elapsed = time.time() - start_time
+                                import traceback
+                                traceback.print_exc()
+                                # Try to end loop if it's still running
+                                try:
+                                    if hasattr(current_engine, '_inLoop') and current_engine._inLoop:
+                                        current_engine.endLoop()
+                                except:
+                                    pass
+                            
+                            # Stop and cleanup engine
+                            try:
+                                current_engine.stop()
+                            except:
+                                pass
+                        except Exception as e:
+                            import traceback
+                            traceback.print_exc()
+                        finally:
+                            # Always cleanup the engine
+                            if current_engine:
+                                try:
+                                    current_engine.stop()
+                                except:
+                                    pass
+                                try:
+                                    del current_engine
+                                except:
+                                    pass
+                            
+                            # CRITICAL: Always mark task as done, even on error/timeout
+                            if not task_marked_done:
+                                try:
+                                    self._tts_queue.task_done()
+                                    task_marked_done = True
+                                except Exception as task_error:
+                                    pass
+                    except Exception as e:
+                        import traceback
+                        traceback.print_exc()
+                        # Mark task done even on outer exception (only if not already done)
+                        try:
+                            if not task_marked_done:
+                                self._tts_queue.task_done()
+                                task_marked_done = True
+                        except:
+                            pass
+            finally:
+                # Cleanup
+                if engine:
+                    try:
+                        try:
+                            engine.endLoop()
+                        except:
+                            pass
+                        engine.stop()
+                    except:
+                        pass
+                # Uninitialize COM
+                if com_initialized:
+                    try:
+                        import pythoncom
+                        pythoncom.CoUninitialize()
+                    except:
+                        pass
+        
+        self._tts_worker_thread = threading.Thread(target=_tts_worker, daemon=not is_daemon_context, name="TTSWorker")
+        self._tts_worker_thread.start()
+    
+    def _stop_tts_worker(self):
+        """Stop the TTS worker thread."""
+        self._tts_worker_running = False
+        if self._tts_queue:
+            try:
+                self._tts_queue.put(None)  # Shutdown signal
+            except:
+                pass
+        if self._tts_worker_thread and self._tts_worker_thread.is_alive():
+            self._tts_worker_thread.join(timeout=2)
 
+    def wait_for_tts_completion(self, timeout=20):
+        """Wait for TTS thread to complete, with timeout using polling to avoid hangs."""
+        if not self._tts_thread:
+            return True
+            
+        if not self._tts_thread.is_alive():
+            return True
+        
+        start_time = time.time()
+        poll_interval = 0.2  # Check every 200ms
+        
+        while self._tts_thread.is_alive():
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                return False
+            time.sleep(poll_interval)
+        
+        return True
+    
     def speak(self, text):
         # This function is to convert text to speech
         print(f"TalkAssist: {text}")
+        
+        # Store the text for wait time estimation
+        self._last_spoken_text = text
+        
         # Try to use GUI TTS first (non-blocking)
         gui_speak_called = False
         try:
@@ -66,57 +294,56 @@ class OfflineMode:
                     if gui:
                         try:
                             gui.add_bot_message(text)
-                        except:
+                        except Exception as e:
                             pass
                         
-                        """try:
+                        try:
                             # Use GUI TTS to avoid duplicate audio (non-blocking)
                             gui.speak(text, self.tts_rate, self.tts_volume)
                             gui_speak_called = True
-                        except:
+                        except Exception as e:
                             pass
                         
                         if gui_speak_called:
-                            return"""
-        except:
-           pass
+                            return  # GUI handles TTS, so we don't need to do it here
+        except Exception as e:
+            pass
         
-        # Wait for previous TTS thread to finish before starting a new one
-        if self._tts_thread and self._tts_thread.is_alive():
-            self._tts_thread.join(timeout=15)  # Wait up to 15 seconds (TTS can take time)
-        time.sleep(0.3)
+        # Fallback to local TTS if GUI not available or failed - use queue-based approach
+        # Ensure TTS worker is running
+        if not (self._tts_worker_thread and self._tts_worker_thread.is_alive()):
+            self._start_tts_worker()
+            time.sleep(0.2)  # Give worker time to start
         
-        def _speak_fallback():
-            # Use lock inside the thread to ensure only one TTS operation at a time
+        # Add text to queue (non-blocking)
+        try:
+            self._tts_queue.put(text, block=False)
+        except queue.Full:
+            pass
+        except Exception as e:
+            # Fallback to old thread-based approach if queue fails
+            self._speak_fallback_old(text)
+        
+        # Old thread-based approach kept as fallback (not used in normal operation)
+        def _speak_fallback_old(text_to_speak):
+            # This is the old approach - kept for emergency fallback only
             with self._tts_lock:
                 engine = None
                 try:
-                    # Using 'sapi5' driver explicitly on Windows to avoid conflicts
-                    try:
-                        engine = pyttsx3.init(driverName='sapi5')
-                    except:
-                        # Fallback to default if sapi5 fails
-                        engine = pyttsx3.init()
-                    
+                    engine = pyttsx3.init(driverName='sapi5')
                     engine.setProperty('rate', self.tts_rate)
                     engine.setProperty('volume', self.tts_volume)
-                    engine.say(text)
+                    engine.say(text_to_speak)
                     engine.runAndWait()
                     engine.stop()
-                except:
+                except Exception as e:
                     pass
                 finally:
-                    # Clean up engine completely
-                    if engine is not None:
+                    if engine:
                         try:
                             engine.stop()
-                            time.sleep(0.1)
-                            del engine
                         except:
                             pass
-        self._tts_thread = threading.Thread(target=_speak_fallback, daemon=True)
-        self._tts_thread.start()
-
 
     def check_audio_level(self, audio_data):
         #checking the volume level of audio data
@@ -153,7 +380,7 @@ class OfflineMode:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    def listen(self, max_duration=7, silence_duration=2.0):
+    def listen(self, max_duration=7, silence_duration=3.5):
          # is able to record audio with automatic silence detection. Will stp recording after silence_durantion seconds of silence
         audio = pyaudio.PyAudio()
         stream = audio.open(
@@ -286,7 +513,7 @@ class OfflineMode:
             return True
         
          #getting the list of reminders
-        if any (word in text_lower for word in ["list reminders", "show reminders", "what are my reminders", "my reminders", "list reminder"]):
+        if any (word in text_lower for word in ["list reminders", "show reminders", "what are my reminders", "my reminders"]):
             self.list_reminders()
             return True
         
@@ -330,25 +557,16 @@ class OfflineMode:
         return True
     
     def _load_existing_reminders(self):
-        """Load existing reminders and schedule only future active ones.
-        Any active reminders whose time is already in the past are marked inactive.
-        """
+        """Load existing reminders from JSON and schedule them."""
         if os.path.exists(self.reminders_file):
             try:
-                with reminders_lock:
-                    with open(self.reminders_file, 'r', encoding='utf-8') as f:
-                        reminders = json.load(f)
+                with open(self.reminders_file, 'r') as f:
+                    reminders = json.load(f)
                 
                 now = datetime.now()
-                changed = False
                 for reminder in reminders:
                     if reminder.get("active", True):
-                        try:
-                            reminder_time = datetime.fromisoformat(reminder['time'])
-                        except Exception as e:
-                            print(f"Skipping reminder {reminder.get('id')}: bad time value {reminder.get('time')}, {e}")
-                            continue
-
+                        reminder_time = datetime.fromisoformat(reminder['time'])
                         if reminder_time > now:
                             job_id = f"reminder_{reminder['id']}"
                             try:
@@ -357,25 +575,12 @@ class OfflineMode:
                                     'date',
                                     run_date=reminder_time,
                                     args=[reminder['id'], reminder['text']],
-                                    id=job_id,
-                                    replace_existing=True,
+                                    id=job_id
                                 )
                             except Exception as e:
-                                print(f"Error scheduling reminder {reminder.get('id')}: {e}")
-                        else:
-                            reminder["active"] = False
-                            changed = True
-
-                if changed:
-                    try:
-                        with reminders_lock:
-                            with open(self.reminders_file, 'w', encoding='utf-8') as f:
-                                json.dump(reminders, f, indent=4)
-                    except Exception as e:
-                        print(f"Error  updating overdue reminders: {e}")
+                                print(f"Error scheduling reminder {reminder['id']}: {e}")
             except Exception as e:
                 print(f"Error loading reminders: {e}")
-
     
     def _extract_task_from_text(self, text):
         """Extract the task description from text, removing time information."""
@@ -412,16 +617,15 @@ class OfflineMode:
     
     def set_reminder(self, text):
         """Set a reminder from natural language text."""
-        with reminders_lock:
         # Load existing reminders
-            if os.path.exists(self.reminders_file):
-                try:
-                    with open(self.reminders_file, 'r') as f:
-                        reminders = json.load(f)
-                except:
-                    reminders = []
-            else:
+        if os.path.exists(self.reminders_file):
+            try:
+                with open(self.reminders_file, 'r') as f:
+                    reminders = json.load(f)
+            except:
                 reminders = []
+        else:
+            reminders = []
         
         # Clean and preprocess text
         raw_lower = text.lower().strip()
@@ -431,7 +635,7 @@ class OfflineMode:
         trigger_prefix = re.compile(
             r'^(?:'
             r'remind\s+me(?:\s+to)?'
-            r'|set\s+(?:a\s+|the\s+)?reminder(?:\s+to)?'
+            r'|set\s+(?:a\s+)?reminder(?:\s+to)?'
             r'|remember\s+to'
             r'|we\s+(?:need|have)\s+to'
             r')\s+',
@@ -480,9 +684,8 @@ class OfflineMode:
         
         # Write to JSON file
         try:
-            with reminders_lock:
-                with open(self.reminders_file, 'w') as f:
-                    json.dump(reminders, f, indent=4)
+            with open(self.reminders_file, 'w') as f:
+                json.dump(reminders, f, indent=4)
         except Exception as e:
             print(f"Error saving reminder: {e}")
             self.speak("Sorry, I couldn't save the reminder.")
@@ -491,14 +694,12 @@ class OfflineMode:
         # Schedule reminder
         job_id = f"reminder_{reminder_id}"
         try:
-           
             self.scheduler.add_job(
                 self.trigger_reminder,
                 'date',
                 run_date=reminder_time,
                 args=[reminder_id, reminder_text],
-                id=job_id,
-                replace_existing=True,
+                id=job_id
             )
         except Exception as e:
             print(f"Error scheduling reminder: {e}")
@@ -714,14 +915,13 @@ class OfflineMode:
         # Mark as inactive
         if os.path.exists(self.reminders_file):
             try:
-                with reminders_lock:
-                    with open(self.reminders_file, 'r') as f:
-                        reminders = json.load(f)
-                    for r in reminders:
-                        if r['id'] == reminder_id:
-                            r['active'] = False
-                    with open(self.reminders_file, 'w') as f:
-                        json.dump(reminders, f, indent=4)
+                with open(self.reminders_file, 'r') as f:
+                    reminders = json.load(f)
+                for r in reminders:
+                    if r['id'] == reminder_id:
+                        r['active'] = False
+                with open(self.reminders_file, 'w') as f:
+                    json.dump(reminders, f, indent=4)
             except:
                 pass
 
@@ -732,9 +932,8 @@ class OfflineMode:
             return
         
         try:
-            with reminders_lock:    
-                with open(self.reminders_file, 'r', encoding="utf-8") as f:
-                    reminders = json.load(f)
+            with open(self.reminders_file, 'r') as f:
+                reminders = json.load(f)
         except:
             self.speak("Error loading reminders.")
             return
@@ -748,23 +947,15 @@ class OfflineMode:
         if not active_reminders:
             self.speak("You have no active reminders.")
             return
-        active_reminders.sort(key=lambda r: datetime.fromisoformat(r["time"]))
-        parts = []
-        for r in active_reminders:
-            text = r.get('text', 'No description')
-            time_str = r.get('time', '')
-            try:
-                dt = datetime.fromisoformat(time_str)
-                friendly_time = dt.strftime("%I:%M %p on %B %d, %Y")
-            except Exception:
-                friendly_time = time_str or "an unknown time"
-            parts.append(f"{text} at {friendly_time}")
-        if len(active_reminders) == 1:
-            msg = "You have 1 active reminder: " + parts[0]
-        else:
-            msg = f"You have {len(active_reminders)} active reminders: " + "; ".join(parts)
-        self.speak(msg)
-        return msg
+        
+        active_reminders.sort(key=lambda r: datetime.fromisoformat(r['time']))
+        count = len(active_reminders)
+        
+        self.speak(f"You have {count} active reminder{'s' if count > 1 else ''}")
+        for i, reminder in enumerate(active_reminders, 1):
+            reminder_time = datetime.fromisoformat(reminder['time'])
+            time_str = reminder_time.strftime("%I:%M %p on %B %d")
+            self.speak(f"Reminder {i} at {time_str}: {reminder['text']}")
 
     def run(self):
         print("\n" + "="*60)
@@ -779,11 +970,26 @@ class OfflineMode:
         # Mark as running
         self.is_running = True
         
+        # Give audio resources a moment to be freed after mode switch
+        time.sleep(1.0)
+        
         # Speak greeting and ensure it completes before continuing
         greeting = "Hello! I am TalkAssist running in offline mode. How can I assist you today?"
         self.speak(greeting)
         
-        # Give TTS a moment to start, especially when using GUI TTS from a thread
+        # Wait for greeting TTS to complete before starting to listen
+        # Use time-based wait to avoid hangs
+        greeting_text = greeting
+        estimated_speech_time = max(2.0, len(greeting_text.split()) * 0.4)
+        wait_time = min(estimated_speech_time + 1.0, 6.0)  # Cap at 6 seconds for greeting
+        
+        start_wait = time.time()
+        while time.time() - start_wait < wait_time:
+            if not (self._tts_thread and self._tts_thread.is_alive()):
+                break
+            time.sleep(0.2)
+        
+        # Small additional delay to ensure audio is fully ready
         time.sleep(0.5)
 
         conversation_ended_naturally = False
@@ -791,7 +997,6 @@ class OfflineMode:
         iteration = 0
         while not self._stop_event.is_set() and self.is_running:
             iteration += 1
-            #print(f"DEBUG: Loop iteration {iteration} - stop_event={self._stop_event.is_set()}, is_running={self.is_running}")
             
             try:
                 # Check stop event before listening
@@ -800,43 +1005,72 @@ class OfflineMode:
                 
                 if not self.is_running:
                     break
-
-                if self._tts_thread and self._tts_thread.is_alive():
-                    time.sleep(0.1)
-                    continue
-                
-                # Debug output to show we're about to listen
                 
                 try:
                     user_text = self.listen()
-                    #print(f"DEBUG: listen() returned: '{user_text}'")
                 except Exception as listen_error:
-                    #print(f"DEBUG: Error in listen(): {listen_error}")
                     import traceback
                     traceback.print_exc()
                     user_text = ""  # Set to empty string to continue loop
 
                 # Check stop event after listening
                 if self._stop_event.is_set():
-                    print("DEBUG: Stop event is set after listen(), breaking loop")
                     break
 
                 if not user_text or user_text.strip() == "":
                     # Empty input - continue listening (don't break the loop)
                     continue
 
-                #print(f"DEBUG: Processing command: {user_text}")
                 try:
                     should_continue = self.process_command(user_text)
                     
-                    # Give TTS a moment to start (especially important for GUI TTS)
-                    time.sleep(0.3)
+                    # Wait for TTS queue to be empty AND ensure worker has finished processing
+                    # This prevents audio conflicts where TTS is still playing when we start listening
+                    if self._last_spoken_text:
+                        estimated_speech_time = max(1.5, len(self._last_spoken_text.split()) * 0.35)  # Faster estimate
+                        max_wait_time = min(estimated_speech_time + 1.0, 8.0)  # Cap at 8 seconds
+                    else:
+                        max_wait_time = 3.0
+                    
+                    # Wait for queue to be empty AND give a bit more time for audio to finish
+                    start_wait = time.time()
+                    queue_empty_time = None
+                    
+                    while time.time() - start_wait < max_wait_time:
+                        queue_size = self._tts_queue.qsize()
+                        
+                        if queue_size == 0:
+                            if queue_empty_time is None:
+                                queue_empty_time = time.time()
+                            
+                            # Queue is empty, but wait a bit more to ensure audio finishes playing
+                            # This prevents cutting off the audio when we start listening
+                            if queue_empty_time and (time.time() - queue_empty_time) >= 0.5:
+                                # Queue has been empty for 0.5s, audio should be done
+                                break
+                        else:
+                            # Queue not empty yet, reset the empty timer
+                            queue_empty_time = None
+                        
+                        time.sleep(0.1)
+                    
+                    # Check worker health
+                    if self._tts_worker_thread and not self._tts_worker_thread.is_alive():
+                        self._start_tts_worker()
+                        time.sleep(0.2)
+                    
+                    # Small additional delay to ensure audio system is ready
+                    time.sleep(0.15)
                     
                 except Exception as cmd_error:
-                    print(f"DEBUG: Error in process_command: {cmd_error}")
                     import traceback
                     traceback.print_exc()
                     should_continue = True  # Continue the loop even if command processing fails
+                    # Still wait for any TTS that might have started (with shorter timeout)
+                    try:
+                        self.wait_for_tts_completion(timeout=5)
+                    except Exception as e:
+                        pass
 
                 # Verify we should continue before checking the flag
                 if not should_continue:
@@ -863,12 +1097,10 @@ class OfflineMode:
                 self.is_running = False
                 break
             except Exception as e:
-                print(f"An error occurred: {e}")
                 import traceback
                 traceback.print_exc()
                 self.speak("Sorry, I encountered an error. Please try again.")
                 # Continue the loop even after errors - don't exit
-                print("DEBUG: Error handled, continuing loop...")
                 continue
 
         # Mark as not running
@@ -889,6 +1121,7 @@ class OfflineMode:
         """Request the offline loop to stop and shutdown resources."""
         self.is_running = False
         self._stop_event.set()
+        self._stop_tts_worker()
         try:
             self.scheduler.shutdown()
         except:
@@ -897,6 +1130,3 @@ class OfflineMode:
 if __name__ == "__main__":
     offline_mode = OfflineMode()
     offline_mode.run()
-
-
-

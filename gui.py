@@ -34,12 +34,6 @@ class TalkAssistGUI:
         self._tts_lock = threading.Lock()
         self.tts_rate = 150
         self.tts_volume = 0.9
-
-        # TTS queue + worker (single thread handles all speech)
-        self._tts_queue = queue.Queue()
-        self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
-        self._tts_thread.start()
-
         
         # Reminders data
         self.reminders = []
@@ -55,67 +49,43 @@ class TalkAssistGUI:
             with self._tts_lock:
                 if self._tts_engine is None:
                     try:
-                        try:
-                            self._tts_engine = pyttsx3.init(driverName='sapi5')
-                        except Exception:
-                            self._tts_engine = pyttsx3.init()
+                        self._tts_engine = pyttsx3.init()
                         self._tts_engine.setProperty('rate', self.tts_rate)
                         self._tts_engine.setProperty('volume', self.tts_volume)
-                        print("TTS engine initialized")
                     except Exception as e:
-                        print(f"TTS Initialization Error: {e}")
+                        print(f"Warning: Could not initialize TTS engine: {e}")
                         return None
         return self._tts_engine
-        
-    def _tts_worker(self):
-        while True:
-            item = self._tts_queue.get()
-            if item is None:
-                # Optional: allow clean shutdown by putting None in the queue
-                self._tts_queue.task_done()
-                break
-
-            text, rate, volume = item
-
-            if not text or text.strip() == "":
-                self._tts_queue.task_done()
-                continue
-
-            engine = self._get_tts_engine()
-            if not engine:
-                self._tts_queue.task_done()
-                continue
-
-            # Only one TTS operation at a time
-            with self._tts_lock:
-                try:
-                    if rate != self.tts_rate or volume != self.tts_volume:
-                        self.tts_rate = rate
-                        self.tts_volume = volume
-                        engine.setProperty('rate', rate)
-                        engine.setProperty('volume', volume)
-
-                    engine.say(text)
-                    engine.runAndWait()
-                    # NOTE: no engine.stop() here, we keep the engine alive
-                except Exception as e:
-                    print(f"TTS Error: {e}")
-
-            self._tts_queue.task_done()
-
     
     def speak(self, text, rate=150, volume=0.9):
-        """Queue text to be spoken by TTS engine"""
+        """Speak text using text-to-speech (handled by GUI to avoid duplicates)"""
         if not text or text.strip() == "":
             return
         if text.lower().startswith(("error processing message", "sorry, the bot", "tts error")):
             return
-        if not hasattr(self, '_tts_queue') or self._tts_queue is None:
-            self._tts_queue = queue.Queue()
-            self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
-            self._tts_thread.start()
-        self._tts_queue.put((text, rate, volume))
-
+        
+        # Update rate/volume if changed
+        if rate != self.tts_rate or volume != self.tts_volume:
+            self.tts_rate = rate
+            self.tts_volume = volume
+            engine = self._get_tts_engine()
+            if engine:
+                engine.setProperty('rate', rate)
+                engine.setProperty('volume', volume)
+        
+        # Speak in a separate thread to avoid blocking
+        def _speak_thread():
+            engine = self._get_tts_engine()
+            if engine:
+                try:
+                    engine.say(text)
+                    engine.runAndWait()
+                    engine.stop()
+                except Exception as e:
+                    print(f"TTS Error: {e}")
+        
+        tts_thread = threading.Thread(target=_speak_thread, daemon=True)
+        tts_thread.start()
         
     def _create_widgets(self):
         """Create and layout all GUI widgets"""
@@ -605,4 +575,3 @@ class TalkAssistGUI:
             self.root.destroy()
         except:
             pass
-
