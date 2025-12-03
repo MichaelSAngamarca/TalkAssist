@@ -189,11 +189,15 @@ def save_to_txt(parameters):
     except Exception as e:
         return f"Error saving file: {e}"
     
-
-   # this is a fuction for the online mode to set rmeinders and store them in a json file like the offline mode
+ # this is a fuction for the online mode to set rmeinders and store them in a json file like the offline mode
 def set_reminder(parameters):
     reminder_text = (parameters.get("text") or parameters.get("reminder") or parameters.get("task") or parameters.get("description") or parameters.get("title"))
     when = parameters.get("time")   or parameters.get("when")
+
+    # Debug logging
+    print(f"[DEBUG] set_reminder called with parameters: {parameters}")
+    print(f"[DEBUG] reminder_text: '{reminder_text}'")
+    print(f"[DEBUG] when: '{when}'")
 
     if not reminder_text:
         return "I could not find what the reminder should be about"
@@ -205,23 +209,29 @@ def set_reminder(parameters):
         reminder_time = datetime.fromisoformat(when)
         success = True
         error = None
-    except Exception:
+        print(f"[DEBUG] Parsed as ISO format: {reminder_time}")
+    except Exception as e:
         reminder_time = None
         success = False
         error = None
+        print(f"[DEBUG] Not ISO format (error: {e}), trying TimeParser...")
     if reminder_time is None:
         try:
+            print(f"[DEBUG] Calling parser.parse_time('{when}')...")
             parsed_time, success, error = parser.parse_time(when)
             reminder_time = parsed_time if success else None
+            print(f"[DEBUG] TimeParser result - parsed_time: {parsed_time}, success: {success}, error: {error}")
         except Exception as e:
             reminder_time = None
             success = False
             error = str(e)
+            print(f"[DEBUG] TimeParser exception: {e}")
     if reminder_time is None:
         msg = f"I could not understand the time '{when}'."
         if error:
             msg += f" Error: {error}"
-        return msg + "Please try something like 'in 10 minutes' or 'tomorrow at 10 AM'."
+        print(f"[DEBUG] Final error message: {msg}")
+        return msg + " Please try something like 'in 10 minutes' or 'tomorrow at 10 AM'."
     now = datetime.now()
     if reminder_time < now:
        reminder_time = now + timedelta(minutes=5)

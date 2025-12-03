@@ -28,8 +28,12 @@ class TimeParser:
      It takes spoken text and figures out when the reminder should happen
      """
     def parse_time(self, text):
+        print(f"[DEBUG TimeParser] Input text: '{text}'")
         text = text.lower().strip()
+        print(f"[DEBUG TimeParser] After lower/strip: '{text}'")
+        text = re.sub(r'\.{2,}', '.', text)
         text = self._convert_words_to_numbers(text)
+        print(f"[DEBUG TimeParser] After word conversion: '{text}'")
         now = datetime.now()
         daypart_defaults = {"morning": "9 am", "afternoon": "3 pm", "evening": "7 pm", "night": "9 pm"}
         text = re.sub(r'\btonight\b', 'today night', text)
@@ -121,6 +125,8 @@ class TimeParser:
 
     def _convert_words_to_numbers(self, text):
         text = text.lower()
+        text = re.sub(r'\b(a\.?\s*m\.?)\.?\b', 'am', text)
+        text = re.sub(r'\b(p\.?\s*m\.?)\.?\b', 'pm', text)
 
         small = {
             'zero': 0, 'oh': 0,
@@ -198,12 +204,15 @@ class TimeParser:
     # get the time form the text, then return datetime.time object or none "4pm", "16:30", "4:30"
     def _extract_time(self, text):
         from datetime import datetime
+        print(f"[DEBUG _extract_time] Input: '{text}'")
         text = text.lower()
 
         # A: "10:30am", "10.30 pm"
         pattern_a = r'(\d{1,2})[:.](\d{2})\s*(am|pm|a\.m\.|p\.m\.)'
         match = re.search(pattern_a, text)
+        print(f"[DEBUG _extract_time] Pattern A test: {bool(match)}")
         if match:
+            print(f"[DEBUG _extract_time] Pattern A matched: {match.groups()}")
             hour = int(match.group(1))
             minute = int(match.group(2))
             meridien = match.group(3).lower()
@@ -212,7 +221,9 @@ class TimeParser:
             if 'am' in meridien and hour == 12:
                 hour = 0
             if 0 <= hour < 24 and 0 <= minute < 60:
-                return datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
+                result = datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
+                print(f"[DEBUG _extract_time] Pattern A result: {result}")
+                return result
 
         # B: "1 15 am"  (hour + space + minutes + am/pm)
         pattern_b = r'\b(\d{1,2})\s+(\d{2})\s*(am|pm|a\.m\.|p\.m\.)\b'
@@ -220,7 +231,7 @@ class TimeParser:
         if match:
             hour = int(match.group(1))
             minute = int(match.group(2))
-            meridien = match.group(3).lower()
+            meridien = match.group(3).lower().replace('.', '')
             if 'pm' in meridien and hour != 12:
                 hour += 12
             if 'am' in meridien and hour == 12:
@@ -245,7 +256,9 @@ class TimeParser:
         # D: "10am", "10 am", "10pm"
         pattern_d = r'\b(\d{1,2})\s*(am|pm|a\.m\.|p\.m\.)\b'
         match = re.search(pattern_d, text)
+        print(f"[DEBUG _extract_time] Pattern D test: {bool(match)}")
         if match:
+            print(f"[DEBUG _extract_time] Pattern D matched: {match.groups()}")
             hour = int(match.group(1))
             meridien = match.group(2).lower()
             if 'pm' in meridien and hour != 12:
@@ -253,7 +266,9 @@ class TimeParser:
             if 'am' in meridien and hour == 12:
                 hour = 0
             if 0 <= hour < 24:
-                return datetime.strptime(f"{hour}:00", "%H:%M").time()
+                result = datetime.strptime(f"{hour}:00", "%H:%M").time()
+                print(f"[DEBUG _extract_time] Pattern D result: {result}")
+                return result
 
         # E: 24-hour "16:45", "8.00" without am/pm
         pattern_e = r'(\d{1,2})[:.](\d{2})(?!\s*[ap]\.?m\.?)'
@@ -264,6 +279,7 @@ class TimeParser:
             if 0 <= hour < 24 and 0 <= minute < 60:
                 return datetime.strptime(f"{hour}:{minute}", "%H:%M").time()
 
+        print(f"[DEBUG _extract_time] No patterns matched, returning None")
         return None
 
     
@@ -285,6 +301,3 @@ class TimeParser:
         
         # Otherwise full date
         return dt.strftime('%A, %B %d at %I:%M %p')
-   
-
-        
