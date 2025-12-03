@@ -256,6 +256,12 @@ def run_online_mode_thread(conversation):
     global current_mode, online_conversation, conversation_ended_event, switching_modes
     try:
         print("Starting online conversation session...")
+        # Show mic indicator if GUI available
+        if gui_instance:
+            try:
+                gui_instance.show_microphone_safe()
+            except Exception:
+                pass
         conversation.start_session()
         conversation_id = conversation.wait_for_session_end()
         print(f"\nOnline conversation ended. Conversation ID: {conversation_id}")
@@ -280,6 +286,12 @@ def run_online_mode_thread(conversation):
                 online_conversation = None
                 conversation_ended_event.set()
     finally:
+        # Always hide mic indicator when the thread finishes/cleans up
+        try:
+            if gui_instance:
+                gui_instance.hide_microphone_safe()
+        except Exception:
+            pass
         # Only clean up if we're still the active conversation (not already switched)
         with mode_lock:
             # Only clear if this conversation is still the active one and not already cleaned up
@@ -292,6 +304,12 @@ def run_offline_mode_thread():
     """Run offline mode in a separate thread."""
     global current_mode, offline_mode_instance, conversation_ended_event, switching_modes
     try:
+        # Show mic indicator if GUI available
+        if gui_instance:
+            try:
+                gui_instance.show_microphone_safe()
+            except Exception:
+                pass
         offline_mode_instance.run()
         # Only set event if we're still in offline mode AND not switching modes
         with mode_lock:
@@ -312,6 +330,12 @@ def run_offline_mode_thread():
                 offline_mode_instance = None
                 conversation_ended_event.set()
     finally:
+        # Always hide mic indicator when leaving offline mode
+        try:
+            if gui_instance:
+                gui_instance.hide_microphone_safe()
+        except Exception:
+            pass
         with mode_lock:
             # Only clean up if not already done above
             if current_mode == 'offline':

@@ -95,8 +95,6 @@ class TalkAssistGUI:
                         engine.setProperty('rate', rate)
                         engine.setProperty('volume', volume)
 
-                    engine.say(text)
-                    engine.runAndWait()
                     # NOTE: no engine.stop() here, we keep the engine alive
                 except Exception as e:
                     print(f"TTS Error: {e}")
@@ -143,34 +141,36 @@ class TalkAssistGUI:
         nav_frame.pack(side=tk.LEFT, padx=(40, 0))
         
         # Conversation button
-        self.conversation_btn = tk.Button(
+        self.conversation_btn = tk.Label(
             nav_frame,
             text="💬 Conversation",
             font=("Segoe UI", 11, "bold"),
             bg="#3498db",
             fg="white",
-            relief=tk.FLAT,
             padx=15,
             pady=8,
             cursor="hand2",
-            command=self._show_conversation_view
         )
         self.conversation_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
+        self.conversation_btn.bind("<Button-1>", lambda e: self._show_conversation_view())
+        self.conversation_btn.bind("<Enter>", lambda e: self.conversation_btn.config(relief=tk.RAISED))
+        self.conversation_btn.bind("<Leave>", lambda e: self.conversation_btn.config(relief=tk.FLAT))
+                
         # Reminders button
-        self.reminders_btn = tk.Button(
+        self.reminders_btn = tk.Label(
             nav_frame,
             text="📋 Reminders",
             font=("Segoe UI", 11),
-            bg="#34495e",
+            bg="#2980b9",
             fg="white",
-            relief=tk.FLAT,
             padx=15,
             pady=8,
             cursor="hand2",
-            command=self._show_reminders_view
         )
         self.reminders_btn.pack(side=tk.LEFT)
+        self.reminders_btn.bind("<Button-1>", lambda e: self._show_reminders_view())
+        self.reminders_btn.bind("<Enter>", lambda e: self.reminders_btn.config(relief=tk.RAISED))
+        self.reminders_btn.bind("<Leave>", lambda e: self.reminders_btn.config(relief=tk.FLAT))
         
         # Status indicator
         self.status_label = tk.Label(
@@ -181,6 +181,17 @@ class TalkAssistGUI:
             fg="#95a5a6"
         )
         self.status_label.pack(side=tk.RIGHT, padx=20, pady=15)
+
+        # Microphone indicator (hidden initially)
+        self.mic_label = tk.Label(
+            header_frame,
+            text="🎤 Listening...",
+            font=("Segoe UI", 12, "bold"),
+            bg="#2c3e50",
+            fg="#e74c3c"  # red color
+        )
+        self.mic_label.pack(side=tk.RIGHT, padx=20, pady=15)
+        self.mic_label.pack_forget()
         
         # Main content area (will switch between conversation and reminders)
         self.content_frame = tk.Frame(main_frame, bg="#f0f0f0")
@@ -276,6 +287,59 @@ class TalkAssistGUI:
             fg="#7f8c8d"
         )
         self.info_label.pack(pady=5)
+
+    def _get_bubble_font(self):
+        """Return the font tuple used inside bubbles (single place to tweak)."""
+        return ("Segoe UI", 11)
+
+    def _draw_rounded_rect(self, canvas, x1, y1, x2, y2, r=12, **kwargs):
+        """
+        Draw a rounded rectangle by composing rectangles + corner ovals.
+        kwargs are passed to each create_* call (use 'fill' and 'outline').
+        """
+        # center rectangles
+        canvas.create_rectangle(x1 + r, y1, x2 - r, y2, **kwargs)
+        canvas.create_rectangle(x1, y1 + r, x2, y2 - r, **kwargs)
+        # corner ovals
+        canvas.create_oval(x1, y1, x1 + 2*r, y1 + 2*r, **kwargs)
+        canvas.create_oval(x2 - 2*r, y1, x2, y1 + 2*r, **kwargs)
+        canvas.create_oval(x1, y2 - 2*r, x1 + 2*r, y2, **kwargs)
+        canvas.create_oval(x2 - 2*r, y2 - 2*r, x2, y2, **kwargs)
+
+    def _create_bubble_widget(self, parent, text, bg_color, fg_color, align="left", max_width=400, pad_x=12, pad_y=10):
+        """
+        Create a Canvas containing a rounded bubble + text.
+        Returns the canvas widget (already sized).
+        align: "left" or "right" (only affects packing in caller).
+        """
+        fnt = self._get_bubble_font()
+        canvas = tk.Canvas(parent, bg="#ffffff", highlightthickness=0, bd=0)
+        # Create text with width so it wraps
+        text_id = canvas.create_text(pad_x, pad_y, text=text, anchor="nw", width=max_width,
+                                     font=fnt, fill=fg_color)
+        # Measure
+        canvas.update_idletasks()
+        bbox = canvas.bbox(text_id)  # (x1, y1, x2, y2)
+        if not bbox:
+            bbox = (0, 0, max_width, fnt[1] if isinstance(fnt[1], int) else 14)
+        x1 = bbox[0] - pad_x
+        y1 = bbox[1] - pad_y
+        x2 = bbox[2] + pad_x
+        y2 = bbox[3] + pad_y
+        # Ensure positive coords
+        if x1 < 0: x1 = 0
+        if y1 < 0: y1 = 0
+
+        # Draw rounded rect behind text (use same fill for outline for a clean look)
+        self._draw_rounded_rect(canvas, x1, y1, x2, y2, r=12, fill=bg_color, outline=bg_color)
+        # Raise text above the shapes
+        canvas.tag_raise(text_id)
+
+        # Size the canvas to fit the bubble neatly
+        width = x2 + 6
+        height = y2 + 6
+        canvas.config(width=width, height=height)
+        return canvas
         
     def _start_update_loop(self):
         """Start the update loop to process queued messages"""
@@ -299,6 +363,12 @@ class TalkAssistGUI:
                     self._update_info(update['info'])
                 elif update_type == 'refresh_reminders':
                     self._load_reminders()
+                elif update_type == 'mic':
+                    action = update.get('action', '')
+                    if action == 'show':
+                        self.show_microphone()
+                    else:
+                        self.hide_microphone()
         except queue.Empty:
             pass
     
@@ -309,25 +379,18 @@ class TalkAssistGUI:
         
         # Create message frame
         msg_frame = tk.Frame(self.conversation_frame, bg="#ffffff")
-        msg_frame.pack(fill=tk.X, padx=10, pady=5)
+        msg_frame.pack(fill=tk.X, padx=10, pady=6)
         
-        # Message bubble (right-aligned)
-        bubble_frame = tk.Frame(msg_frame, bg="#3498db", relief=tk.FLAT)
-        bubble_frame.pack(side=tk.RIGHT, padx=(50, 0))
-        
-        # Message text
-        msg_text = tk.Label(
-            bubble_frame,
+        # Bubble canvas (right side)
+        bubble_canvas = self._create_bubble_widget(
+            msg_frame,
             text=message,
-            font=("Segoe UI", 11),
-            bg="#3498db",
-            fg="white",
-            wraplength=400,
-            justify=tk.LEFT,
-            padx=15,
-            pady=10
+            bg_color="#3498db",   # user's bubble color
+            fg_color="white",
+            align="right",
+            max_width=420
         )
-        msg_text.pack()
+        bubble_canvas.pack(side=tk.RIGHT, padx=(50, 10))
         
         # Timestamp
         timestamp = datetime.now().strftime("%H:%M")
@@ -357,7 +420,7 @@ class TalkAssistGUI:
         
         # Create message frame
         msg_frame = tk.Frame(self.conversation_frame, bg="#ffffff")
-        msg_frame.pack(fill=tk.X, padx=10, pady=5)
+        msg_frame.pack(fill=tk.X, padx=10, pady=6)
         
         # Bot avatar/indicator (left side)
         avatar_label = tk.Label(
@@ -368,23 +431,16 @@ class TalkAssistGUI:
         )
         avatar_label.pack(side=tk.LEFT, padx=(0, 10))
         
-        # Message bubble (left-aligned)
-        bubble_frame = tk.Frame(msg_frame, bg="#ecf0f1", relief=tk.FLAT)
-        bubble_frame.pack(side=tk.LEFT, padx=(0, 50))
-        
-        # Message text
-        msg_text = tk.Label(
-            bubble_frame,
+        # Bubble canvas (left side)
+        bubble_canvas = self._create_bubble_widget(
+            msg_frame,
             text=message,
-            font=("Segoe UI", 11),
-            bg="#ecf0f1",
-            fg="#2c3e50",
-            wraplength=400,
-            justify=tk.LEFT,
-            padx=15,
-            pady=10
+            bg_color="#ecf0f1",   # bot bubble color
+            fg_color="#2c3e50",
+            align="left",
+            max_width=420
         )
-        msg_text.pack()
+        bubble_canvas.pack(side=tk.LEFT, padx=(10, 50))
         
         # Timestamp
         timestamp = datetime.now().strftime("%H:%M")
@@ -425,7 +481,7 @@ class TalkAssistGUI:
         self.conversation_container.pack(fill=tk.BOTH, expand=True)
         # Update button styles
         self.conversation_btn.config(bg="#3498db", font=("Segoe UI", 11, "bold"))
-        self.reminders_btn.config(bg="#34495e", font=("Segoe UI", 11))
+        self.reminders_btn.config(bg="#2980b9", font=("Segoe UI", 11))
     
     def _show_reminders_view(self):
         """Switch to reminders view"""
@@ -436,7 +492,7 @@ class TalkAssistGUI:
         self.reminders_container.pack(fill=tk.BOTH, expand=True)
         # Update button styles
         self.reminders_btn.config(bg="#3498db", font=("Segoe UI", 11, "bold"))
-        self.conversation_btn.config(bg="#34495e", font=("Segoe UI", 11))
+        self.conversation_btn.config(bg="#2980b9", font=("Segoe UI", 11))
         # Refresh reminders display
         self._load_reminders()
     
@@ -573,6 +629,42 @@ class TalkAssistGUI:
     def update_info(self, info):
         """Thread-safe method to update info"""
         self.update_queue.put({'type': 'info', 'info': info})
+
+    def show_microphone(self):
+        """Directly show the microphone indicator (UI thread)."""
+        # If mic_label was added use it; otherwise create fallback
+        try:
+            # If mic_label exists but is hidden, pack it to show
+            if hasattr(self, 'mic_label'):
+                # Ensure it's visible on the right without duplicating
+                try:
+                    self.mic_label.pack(side=tk.RIGHT, padx=20, pady=15)
+                except Exception:
+                    # If already packed, ignore
+                    pass
+            else:
+                # Create a fallback mic label if it doesn't exist
+                self.mic_label = tk.Label(self.root, text="🎤 Listening...", font=("Helvetica", 12, "bold"), bg="#2c3e50", fg="#e74c3c")
+                self.mic_label.pack(side=tk.RIGHT, padx=20, pady=15)
+        except Exception:
+            pass
+
+    def hide_microphone(self):
+        """Directly hide the microphone indicator (UI thread)."""
+        try:
+            if hasattr(self, 'mic_label'):
+                self.mic_label.pack_forget()
+        except Exception:
+            pass
+
+    # Microphone control (thread-safe)
+    def show_microphone_safe(self):
+        """Thread-safe request to show the microphone indicator."""
+        self.update_queue.put({'type': 'mic', 'action': 'show'})
+
+    def hide_microphone_safe(self):
+        """Thread-safe request to hide the microphone indicator."""
+        self.update_queue.put({'type': 'mic', 'action': 'hide'})
     
     def run(self):
         """Start the GUI main loop"""
