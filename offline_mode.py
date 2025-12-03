@@ -20,8 +20,11 @@ import re
 from math_parser import MathParser
 class OfflineMode:
     def __init__(self):
-        print ("loading the whisper model...")
-        self.whisper_model = whisper.load_model("small")  # there are base, small, medium, large models
+        print("loading the whisper model...")
+        self.whisper_model = self._load_whisper_model_offline()
+        
+        if self.whisper_model is None:
+            raise RuntimeError("Could not load Whisper model. Please ensure at least one model is cached locally or check your internet connection.")
 
         self.tts_rate = 150
         self.tts_volume = 0.9
@@ -51,6 +54,7 @@ class OfflineMode:
         self._tts_queue = queue.Queue()
         self._tts_worker_thread = None
         self._tts_worker_running = False
+        self._tts_active_lock = threading.Lock()  # Lock to prevent concurrent TTS operations
         
         # Load existing reminders into scheduler
         self._load_existing_reminders()
@@ -58,6 +62,72 @@ class OfflineMode:
         
         # Start TTS worker thread
         self._start_tts_worker()
+
+    def _load_whisper_model_offline(self):
+        """
+        Load Whisper model, checking for cached models first to avoid downloads when offline.
+        Tries models in order: base, small, medium (smaller to larger, more likely to be cached).
+        """
+        import urllib.error
+        import os
+        
+        # Get the cache directory where Whisper stores models
+        # Whisper typically stores models in ~/.cache/whisper on Linux/Mac or %USERPROFILE%\.cache\whisper on Windows
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+        
+        # Model sizes to try, ordered from smallest to largest
+        # Smaller models are more likely to be cached and faster to load
+        model_sizes = ["base", "small", "medium"]
+        
+        # Check which models are already cached
+        cached_models = []
+        if os.path.exists(cache_dir):
+            for model_size in model_sizes:
+                model_file = os.path.join(cache_dir, f"{model_size}.pt")
+                if os.path.exists(model_file):
+                    cached_models.append(model_size)
+        
+        # Try to load models, prioritizing cached ones
+        models_to_try = cached_models if cached_models else model_sizes
+        
+        print(f"Checking for cached models... Found: {', '.join(cached_models) if cached_models else 'none'}")
+        
+        for model_size in models_to_try:
+            try:
+                print(f"Attempting to load '{model_size}' model...")
+                
+                # Try to load the model
+                # If the model is cached, this should work without internet
+                model = whisper.load_model(model_size, download_root=cache_dir)
+                print(f"Successfully loaded '{model_size}' model!")
+                return model
+                
+            except urllib.error.URLError as e:
+                # Network error - model not cached and can't download
+                error_msg = str(e).lower()
+                if "getaddrinfo failed" in error_msg or "11001" in error_msg:
+                    print(f"  - '{model_size}' model not cached and internet unavailable, trying next model...")
+                    continue
+                else:
+                    print(f"  - Network error loading '{model_size}': {e}, trying next model...")
+                    continue
+                    
+            except Exception as e:
+                # Other errors (corrupted model, missing dependencies, etc.)
+                print(f"  - Error loading '{model_size}' model: {e}, trying next model...")
+                continue
+        
+        # If we get here, no models could be loaded
+        print("\n" + "="*60)
+        print("ERROR: Could not load any Whisper model!")
+        print("="*60)
+        print("Possible solutions:")
+        print("1. Connect to internet and run the application once to download a model")
+        print("2. Manually download a model using: whisper.load_model('base')")
+        print("3. Models are cached in:", cache_dir)
+        print("="*60)
+        
+        return None
     
     def _start_tts_worker(self):
         """Start the TTS worker thread that processes TTS queue."""
@@ -128,70 +198,59 @@ class OfflineMode:
                             current_engine.setProperty('rate', self.tts_rate)
                             current_engine.setProperty('volume', self.tts_volume)
                             
-                            # Speak the text
-                            current_engine.say(text)
-                            
-                            # Use startLoop/iterate instead of runAndWait for better thread compatibility
-                            # This approach works better when COM is initialized in the thread
-                            start_time = time.time()
-                            try:
-                                # Start the loop (False = non-blocking)
-                                current_engine.startLoop(False)
+                            # Use lock to ensure only one TTS operation at a time
+                            # This prevents audio conflicts and stuttering
+                            with self._tts_active_lock:
+                                # Speak the text
+                                current_engine.say(text)
                                 
-                                # Iterate until speech is complete - optimized for speed
-                                max_iterations = 3000  # Safety limit
-                                iteration = 0
-                                speech_started = False
-                                consecutive_no_loop = 0
+                                # Calculate estimated speech duration for timeout fallback
+                                word_count = len(text.split())
+                                estimated_duration = max(2.0, word_count * 0.3)  # ~0.3 seconds per word
+                                max_duration = min(estimated_duration + 2.0, 60.0)  # Cap at 60 seconds
                                 
-                                while iteration < max_iterations:
-                                    # Check if loop is still running
-                                    in_loop = hasattr(current_engine, '_inLoop') and current_engine._inLoop
-                                    
-                                    if not in_loop:
-                                        consecutive_no_loop += 1
-                                        # If loop has been inactive for a few checks, speech is done
-                                        if consecutive_no_loop >= 3:
-                                            break
-                                    else:
-                                        consecutive_no_loop = 0
-                                    
-                                    # Iterate the loop (only if still in loop)
-                                    if in_loop:
-                                        current_engine.iterate()
-                                    
-                                    # After a few iterations, speech should have started
-                                    if iteration == 3 and in_loop:
-                                        speech_started = True
-                                    
-                                    iteration += 1
-                                    # Reduced sleep for faster iteration (only sleep every few iterations)
-                                    if iteration % 5 == 0:
-                                        time.sleep(0.005)  # Very small delay, only every 5th iteration
-                                
-                                # End the loop
+                                # Use runAndWait() for reliable completion
+                                # This is simpler and more reliable than custom loops
+                                start_time = time.time()
                                 try:
-                                    current_engine.endLoop()
-                                except:
-                                    pass
+                                    # Run and wait for speech to complete
+                                    # Use runAndWait() which is more reliable
+                                    current_engine.runAndWait()
+                                    
+                                    # Add a small buffer to ensure audio fully finishes playing
+                                    # This prevents cutting off the end of speech
+                                    time.sleep(0.15)
+                                    
+                                except Exception as run_err:
+                                    # If runAndWait fails, try alternative method
+                                    try:
+                                        # Fallback: use startLoop with timeout
+                                        current_engine.startLoop(False)
+                                        timeout_time = time.time() + max_duration
+                                        
+                                        while time.time() < timeout_time:
+                                            try:
+                                                if not (hasattr(current_engine, '_inLoop') and current_engine._inLoop):
+                                                    break
+                                                current_engine.iterate()
+                                                time.sleep(0.02)  # 20ms delay
+                                            except:
+                                                break
+                                        
+                                        try:
+                                            if hasattr(current_engine, '_inLoop') and current_engine._inLoop:
+                                                current_engine.endLoop()
+                                        except:
+                                            pass
+                                        
+                                        time.sleep(0.15)  # Buffer
+                                    except:
+                                        pass
                                 
                                 elapsed = time.time() - start_time
-                            except Exception as run_err:
-                                elapsed = time.time() - start_time
-                                import traceback
-                                traceback.print_exc()
-                                # Try to end loop if it's still running
-                                try:
-                                    if hasattr(current_engine, '_inLoop') and current_engine._inLoop:
-                                        current_engine.endLoop()
-                                except:
-                                    pass
-                            
-                            # Stop and cleanup engine
-                            try:
-                                current_engine.stop()
-                            except:
-                                pass
+                                
+                                # Small delay before cleanup to ensure audio finishes
+                                time.sleep(0.1)
                         except Exception as e:
                             import traceback
                             traceback.print_exc()
@@ -971,7 +1030,8 @@ class OfflineMode:
         self.is_running = True
         
         # Give audio resources a moment to be freed after mode switch
-        time.sleep(1.0)
+        # This is important when switching from online mode which uses different audio resources
+        time.sleep(1.5)  # Increased delay to ensure audio resources are fully released
         
         # Speak greeting and ensure it completes before continuing
         greeting = "Hello! I am TalkAssist running in offline mode. How can I assist you today?"
@@ -1045,14 +1105,18 @@ class OfflineMode:
                             
                             # Queue is empty, but wait a bit more to ensure audio finishes playing
                             # This prevents cutting off the audio when we start listening
-                            if queue_empty_time and (time.time() - queue_empty_time) >= 0.5:
-                                # Queue has been empty for 0.5s, audio should be done
+                            if queue_empty_time and (time.time() - queue_empty_time) >= 0.8:
+                                # Queue has been empty for 0.8s, audio should be done
                                 break
                         else:
                             # Queue not empty yet, reset the empty timer
                             queue_empty_time = None
                         
                         time.sleep(0.1)
+                    
+                    # Additional delay after TTS completes to ensure audio resources are fully released
+                    # This prevents conflicts when starting to listen
+                    time.sleep(0.3)
                     
                     # Check worker health
                     if self._tts_worker_thread and not self._tts_worker_thread.is_alive():
