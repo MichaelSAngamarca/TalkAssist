@@ -549,8 +549,11 @@ class OfflineMode:
         
         # Math or calculation commands
         if self.math_parser.is_math_expression(text_lower):
-            time_date_keywords = ["time", "date", "day", "today", "tomorrow", "when"]
-            is_time_question = any(keyword in text_lower for keyword in time_date_keywords)
+            # Use word boundary regex to avoid matching "time" in "times"
+            time_date_patterns = [
+                r"\btime\b", r"\bdate\b", r"\bday\b", r"\btoday\b", r"\btomorrow\b", r"\bwhen\b"
+            ]
+            is_time_question = any(re.search(pattern, text_lower) for pattern in time_date_patterns)
             if not is_time_question:
                 try:
                     result = self.math_parser.parse_and_calculate(text)
@@ -560,8 +563,12 @@ class OfflineMode:
                     self.speak("Sorry, I couldn't calculate that.")
                 return True
             
-        # for time queries
-        if any (word in text_lower for word in ["time", "what's the time", "current time", "tell me the time", "time now", "what time is it", "can you tell me the time"]):
+        # for time queries - use word boundary to avoid matching "time" in "times"
+        time_query_patterns = [
+            r"\btime\b", r"what's the time", r"current time", r"tell me the time", 
+            r"time now", r"what time is it", r"can you tell me the time"
+        ]
+        if any(re.search(pattern, text_lower) for pattern in time_query_patterns):
             current_time = datetime.now().strftime("%I:%M %p")
             self.speak(f"The current time is {current_time}")
             return True
