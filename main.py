@@ -567,7 +567,17 @@ def start_offline_mode():
         print("Switching to OFFLINE mode")
         print("="*60)
         
-        offline_mode_instance = OfflineMode()
+        try:
+            offline_mode_instance = OfflineMode()
+        except RuntimeError as e:
+            print(f"\n✗ Failed to initialize offline mode: {e}")
+            print("Offline mode requires at least one Whisper model to be cached locally.")
+            print("Please connect to internet and run the application once to download a model.")
+            switching_modes.clear()
+            current_mode = None
+            offline_mode_instance = None
+            return
+        
         current_mode = 'offline'
         
         # Clear any lingering events before starting new mode
