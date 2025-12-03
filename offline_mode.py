@@ -19,13 +19,16 @@ from time_parser import TimeParser
 import re
 from math_parser import MathParser
 class OfflineMode:
-    def __init__(self):
+    def __init__(self, gui_instance=None):
         print("loading the whisper model...")
         self.whisper_model = self._load_whisper_model_offline()
         
         if self.whisper_model is None:
             raise RuntimeError("Could not load Whisper model. Please ensure at least one model is cached locally or check your internet connection.")
 
+        # Store GUI instance reference
+        self.gui_instance = gui_instance
+        
         self.tts_rate = 150
         self.tts_volume = 0.9
 
@@ -62,6 +65,59 @@ class OfflineMode:
         
         # Start TTS worker thread
         self._start_tts_worker()
+
+    def _get_gui_instance(self):
+        """Get the GUI instance - first from stored reference, then try to get from main module."""
+        # First, use the instance passed to constructor
+        if self.gui_instance:
+            return self.gui_instance
+        
+        # Fallback: try to get from main module (for backward compatibility)
+        try:
+            import sys
+            # Try both 'main' and '__main__' module names
+            main_module = sys.modules.get('main') or sys.modules.get('__main__')
+            if main_module:
+                # Try to get gui_instance attribute
+                if hasattr(main_module, 'gui_instance'):
+                    gui = getattr(main_module, 'gui_instance')
+                    if gui:
+                        return gui
+                # Also try accessing it as a global if it's in the module's globals
+                if hasattr(main_module, '__dict__'):
+                    gui = main_module.__dict__.get('gui_instance')
+                    if gui:
+                        return gui
+        except Exception:
+            pass
+        return None
+
+    def _update_gui_user_message(self, message):
+        """Update GUI with user message (thread-safe)."""
+        if not message or not message.strip():
+            return
+        gui = self._get_gui_instance()
+        if gui:
+            try:
+                gui.add_user_message(message)
+            except Exception as e:
+                # Silently fail - GUI might not be ready or available
+                pass
+
+    def _update_gui_bot_message(self, message):
+        """Update GUI with bot message (thread-safe)."""
+        if not message or not message.strip():
+            return
+        # Skip internal error messages
+        if message.lower().startswith(("error processing message", "sorry, the bot", "tts error")):
+            return
+        gui = self._get_gui_instance()
+        if gui:
+            try:
+                gui.add_bot_message(message)
+            except Exception as e:
+                # Silently fail - GUI might not be ready or available
+                pass
 
     def _load_whisper_model_offline(self):
         """
@@ -342,31 +398,19 @@ class OfflineMode:
         # Store the text for wait time estimation
         self._last_spoken_text = text
         
+        # Update GUI with bot message first - ensure all responses are displayed
+        self._update_gui_bot_message(text)
+        
         # Try to use GUI TTS first (non-blocking)
-        gui_speak_called = False
-        try:
-            import sys
-            main_module = sys.modules.get('main')
-            if main_module:
-                if hasattr(main_module, 'gui_instance'):
-                    gui = getattr(main_module, 'gui_instance')
-                    if gui:
-                        try:
-                            gui.add_bot_message(text)
-                        except Exception as e:
-                            pass
-                        
-                        try:
-                            # Use GUI TTS to avoid duplicate audio (non-blocking)
-                            gui.speak(text, self.tts_rate, self.tts_volume)
-                            gui_speak_called = True
-                        except Exception as e:
-                            pass
-                        
-                        if gui_speak_called:
-                            return  # GUI handles TTS, so we don't need to do it here
-        except Exception as e:
-            pass
+        gui = self._get_gui_instance()
+        if gui:
+            try:
+                # Use GUI TTS to avoid duplicate audio (non-blocking)
+                gui.speak(text, self.tts_rate, self.tts_volume)
+                return  # GUI handles TTS, so we don't need to do it here
+            except Exception as e:
+                # If GUI TTS fails, fall through to local TTS
+                pass
         
         # Fallback to local TTS if GUI not available or failed - use queue-based approach
         # Ensure TTS worker is running
@@ -520,16 +564,8 @@ class OfflineMode:
         text = self.fix_transcription_errors(text)
         if text:
             print(f"✓ You said: {text}")
-            # Update GUI if available
-            try:
-                import sys
-                main_module = sys.modules.get('main')
-                if main_module and hasattr(main_module, 'gui_instance'):
-                    gui = getattr(main_module, 'gui_instance')
-                    if gui:
-                        gui.add_user_message(text)
-            except:
-                pass
+            # Update GUI if available - ensure transcriptions are displayed
+            self._update_gui_user_message(text)
         else:
             self.speak("I didn't catch that. Please try again.")
 
