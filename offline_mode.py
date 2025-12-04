@@ -30,7 +30,7 @@ class OfflineMode:
         self.gui_instance = gui_instance
         
         self.tts_rate = 150
-        self.tts_volume = 0.9
+        self.tts_volume = 1.0  # Set to maximum volume (1.0) to ensure audio is audible
 
         self.math_parser = MathParser()
         self.time_parser = TimeParser()
@@ -65,6 +65,9 @@ class OfflineMode:
         
         # Start TTS worker thread
         self._start_tts_worker()
+        
+        # Test TTS immediately to verify it works
+        self._test_tts()
 
     def _get_gui_instance(self):
         """Get the GUI instance - first from stored reference, then try to get from main module."""
@@ -185,11 +188,41 @@ class OfflineMode:
         
         return None
     
+    def _test_tts(self):
+        """Test TTS to verify audio output is working"""
+        print("\n=== Testing TTS Audio Output ===")
+        try:
+            import pythoncom
+            pythoncom.CoInitialize()
+        except:
+            pass
+        
+        try:
+            test_engine = pyttsx3.init(driverName='sapi5')
+            test_engine.setProperty('rate', 150)
+            test_engine.setProperty('volume', 1.0)
+            print("Test TTS engine created")
+            print(f"Test volume: {test_engine.getProperty('volume')}")
+            test_engine.say("Testing audio output")
+            print("Test: Calling runAndWait...")
+            test_engine.runAndWait()
+            print("Test: runAndWait completed")
+            time.sleep(0.5)
+            test_engine.stop()
+            print("=== TTS Test Complete ===\n")
+        except Exception as e:
+            print(f"TTS Test Failed: {e}")
+            import traceback
+            traceback.print_exc()
+            print("=== TTS Test Failed ===\n")
+    
     def _start_tts_worker(self):
         """Start the TTS worker thread that processes TTS queue."""
         if self._tts_worker_thread and self._tts_worker_thread.is_alive():
+            print("TTS worker thread already running")
             return  # Already running
         
+        print("Starting TTS worker thread...")
         self._tts_worker_running = True
         import threading as th
         is_daemon_context = th.current_thread().daemon if hasattr(th.current_thread(), 'daemon') else False
@@ -203,17 +236,20 @@ class OfflineMode:
                 try:
                     pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
                     com_initialized = True
+                    print("COM initialized (CoInitializeEx) for TTS worker")
                 except:
                     # Fallback to regular CoInitialize
                     pythoncom.CoInitialize()
                     com_initialized = True
+                    print("COM initialized (CoInitialize) for TTS worker")
             except ImportError:
-                pass
+                print("pythoncom not available (not on Windows)")
             except Exception as e:
-                pass
+                print(f"Error initializing COM: {e}")
             
             engine = None
             items_processed = 0
+            print("TTS worker thread started and waiting for items...")
             try:
                 while self._tts_worker_running:
                     try:
@@ -221,7 +257,9 @@ class OfflineMode:
                         try:
                             text = self._tts_queue.get(timeout=1.0)
                             items_processed += 1
+                            print(f"TTS worker: Processing item #{items_processed} from queue")
                         except queue.Empty:
+                            # No items in queue, continue waiting
                             continue
                         
                         if text is None:  # Shutdown signal
@@ -243,16 +281,35 @@ class OfflineMode:
                             
                             try:
                                 current_engine = pyttsx3.init(driverName='sapi5')
+                                print("TTS engine initialized (SAPI5)")
                             except Exception as init_error:
                                 try:
                                     current_engine = pyttsx3.init()
+                                    print("TTS engine initialized (default driver)")
                                 except Exception as e:
+                                    print(f"Failed to initialize TTS engine: {e}")
                                     self._tts_queue.task_done()
                                     continue
                             
-                            # Set properties
+                            # Set properties and verify
                             current_engine.setProperty('rate', self.tts_rate)
                             current_engine.setProperty('volume', self.tts_volume)
+                            
+                            # Verify properties were set correctly
+                            actual_rate = current_engine.getProperty('rate')
+                            actual_volume = current_engine.getProperty('volume')
+                            print(f"TTS Properties - Rate: {actual_rate}, Volume: {actual_volume}")
+                            
+                            # Get available voices for debugging
+                            try:
+                                voices = current_engine.getProperty('voices')
+                                if voices:
+                                    current_voice = current_engine.getProperty('voice')
+                                    print(f"Available voices: {len(voices)}, Current voice: {current_voice}")
+                            except Exception as voice_err:
+                                print(f"Could not get voice info: {voice_err}")
+                            
+                            print(f"Speaking: {text[:50]}..." if len(text) > 50 else f"Speaking: {text}")
                             
                             # Use lock to ensure only one TTS operation at a time
                             # This prevents audio conflicts and stuttering
@@ -269,13 +326,88 @@ class OfflineMode:
                                 # This is simpler and more reliable than custom loops
                                 start_time = time.time()
                                 try:
-                                    # Run and wait for speech to complete
-                                    # Use runAndWait() which is more reliable
-                                    current_engine.runAndWait()
+                                    # Use manual loop instead of runAndWait() to avoid "run loop already started" errors
+                                    print("Starting TTS playback (manual loop)...")
                                     
-                                    # Add a small buffer to ensure audio fully finishes playing
-                                    # This prevents cutting off the end of speech
-                                    time.sleep(0.15)
+                                    # Calculate timeout based on text length
+                                    word_count = len(text.split())
+                                    estimated_duration = max(1.0, word_count * 0.4)  # ~0.4 seconds per word
+                                    timeout_duration = min(estimated_duration + 2.0, 15.0)  # Cap at 15 seconds
+                                    print(f"TTS timeout set to {timeout_duration:.1f}s for {word_count} words")
+                                    
+                                    # Use manual loop for better control and to avoid state issues
+                                    try:
+                                        # Start the loop manually
+                                        current_engine.startLoop(False)
+                                        timeout_time = time.time() + timeout_duration
+                                        iteration_count = 0
+                                        
+                                        # Poll the loop until it completes or times out
+                                        while time.time() < timeout_time:
+                                            try:
+                                                # Check if loop is still running
+                                                if hasattr(current_engine, '_inLoop'):
+                                                    if not current_engine._inLoop:
+                                                        # Loop completed naturally
+                                                        break
+                                                
+                                                # Iterate the loop
+                                                current_engine.iterate()
+                                                iteration_count += 1
+                                                
+                                                # Small delay to prevent CPU spinning
+                                                time.sleep(0.01)  # 10ms delay
+                                                
+                                            except Exception as iter_err:
+                                                # If iteration fails, the loop might be done
+                                                print(f"Loop iteration error (might be normal): {iter_err}")
+                                                break
+                                        
+                                        elapsed = time.time() - start_time
+                                        
+                                        # End the loop properly
+                                        try:
+                                            if hasattr(current_engine, '_inLoop') and current_engine._inLoop:
+                                                current_engine.endLoop()
+                                                print(f"TTS loop ended properly")
+                                        except Exception as end_err:
+                                            print(f"Error ending loop (might be normal): {end_err}")
+                                        
+                                        if elapsed >= timeout_duration:
+                                            print(f"WARNING: TTS playback timed out after {timeout_duration:.1f}s")
+                                            try:
+                                                current_engine.stop()
+                                            except:
+                                                pass
+                                        else:
+                                            print(f"TTS playback completed after {elapsed:.2f}s ({iteration_count} iterations)")
+                                        
+                                        # Add a buffer to ensure audio fully finishes playing
+                                        time.sleep(0.3)
+                                        
+                                    except Exception as loop_err:
+                                        # If manual loop fails, try runAndWait as fallback
+                                        print(f"Manual loop failed: {loop_err}, trying runAndWait fallback...")
+                                        try:
+                                            current_engine.runAndWait()
+                                            elapsed = time.time() - start_time
+                                            print(f"TTS playback completed (runAndWait fallback, {elapsed:.2f}s)")
+                                        except Exception as run_err:
+                                            print(f"runAndWait fallback also failed: {run_err}")
+                                            # Force stop and continue
+                                            try:
+                                                current_engine.stop()
+                                            except:
+                                                pass
+                                    
+                                    # Mark task as done BEFORE cleanup
+                                    if not task_marked_done:
+                                        try:
+                                            self._tts_queue.task_done()
+                                            task_marked_done = True
+                                            print(f"TTS worker: Item #{items_processed} marked as done")
+                                        except Exception as task_error:
+                                            print(f"Error marking task done: {task_error}")
                                     
                                 except Exception as run_err:
                                     # If runAndWait fails, try alternative method
@@ -308,26 +440,33 @@ class OfflineMode:
                                 # Small delay before cleanup to ensure audio finishes
                                 time.sleep(0.1)
                         except Exception as e:
+                            print(f"Error during TTS operation: {e}")
                             import traceback
                             traceback.print_exc()
                         finally:
-                            # Always cleanup the engine
+                            # CRITICAL: Always mark task as done FIRST, before cleanup
+                            # This allows the queue to process the next item
+                            if not task_marked_done:
+                                try:
+                                    self._tts_queue.task_done()
+                                    task_marked_done = True
+                                    print(f"TTS worker: Item #{items_processed} marked as done (in finally block)")
+                                except Exception as task_error:
+                                    print(f"Error marking task done in finally: {task_error}")
+                            
+                            # Don't stop the engine immediately - let it finish playing
+                            # Only cleanup after a delay to ensure audio finishes
+                            time.sleep(0.2)
                             if current_engine:
                                 try:
+                                    # Check if engine is still speaking before stopping
+                                    # Some engines need to finish naturally
                                     current_engine.stop()
                                 except:
                                     pass
                                 try:
                                     del current_engine
                                 except:
-                                    pass
-                            
-                            # CRITICAL: Always mark task as done, even on error/timeout
-                            if not task_marked_done:
-                                try:
-                                    self._tts_queue.task_done()
-                                    task_marked_done = True
-                                except Exception as task_error:
                                     pass
                     except Exception as e:
                         import traceback
@@ -401,52 +540,90 @@ class OfflineMode:
         # Update GUI with bot message first - ensure all responses are displayed
         self._update_gui_bot_message(text)
         
-        # Try to use GUI TTS first (non-blocking)
-        gui = self._get_gui_instance()
-        if gui:
-            try:
-                # Use GUI TTS to avoid duplicate audio (non-blocking)
-                gui.speak(text, self.tts_rate, self.tts_volume)
-                return  # GUI handles TTS, so we don't need to do it here
-            except Exception as e:
-                # If GUI TTS fails, fall through to local TTS
-                pass
-        
-        # Fallback to local TTS if GUI not available or failed - use queue-based approach
+        # Always use offline mode's own TTS worker for reliability
+        # The GUI TTS may not be properly initialized or may fail silently
         # Ensure TTS worker is running
         if not (self._tts_worker_thread and self._tts_worker_thread.is_alive()):
+            print("WARNING: TTS worker thread not running! Starting it now...")
             self._start_tts_worker()
-            time.sleep(0.2)  # Give worker time to start
+            time.sleep(0.5)  # Give worker more time to start and initialize COM
+        
+        # Verify worker is actually alive
+        if not (self._tts_worker_thread and self._tts_worker_thread.is_alive()):
+            print("ERROR: TTS worker thread failed to start! Using fallback method")
+            self._speak_fallback_old(text)
+            return
         
         # Add text to queue (non-blocking)
         try:
+            queue_size_before = self._tts_queue.qsize()
             self._tts_queue.put(text, block=False)
+            queue_size_after = self._tts_queue.qsize()
+            print(f"Added text to TTS queue (size: {queue_size_before} -> {queue_size_after})")
+            
+            # If queue size is growing, the worker might be stuck
+            if queue_size_after > 3:
+                print(f"WARNING: TTS queue has {queue_size_after} items - worker might be stuck!")
         except queue.Full:
-            pass
+            print("TTS queue is full, using fallback method")
+            self._speak_fallback_old(text)
         except Exception as e:
+            print(f"Error adding to TTS queue: {e}, using fallback method")
             # Fallback to old thread-based approach if queue fails
             self._speak_fallback_old(text)
         
-        # Old thread-based approach kept as fallback (not used in normal operation)
-        def _speak_fallback_old(text_to_speak):
-            # This is the old approach - kept for emergency fallback only
-            with self._tts_lock:
-                engine = None
+    def _speak_fallback_old(self, text_to_speak):
+        """Old thread-based approach kept as fallback (not used in normal operation)"""
+        # This is the old approach - kept for emergency fallback only
+        engine = None
+        try:
+            # Initialize COM for Windows (required for SAPI5)
+            try:
+                import pythoncom
+                pythoncom.CoInitialize()
+                print("COM initialized for fallback TTS")
+            except Exception as e:
+                print(f"COM initialization failed: {e}")
+            
+            try:
+                engine = pyttsx3.init(driverName='sapi5')
+                print("Fallback TTS engine initialized (SAPI5)")
+            except Exception as e1:
+                print(f"SAPI5 init failed: {e1}, trying default...")
                 try:
-                    engine = pyttsx3.init(driverName='sapi5')
-                    engine.setProperty('rate', self.tts_rate)
-                    engine.setProperty('volume', self.tts_volume)
-                    engine.say(text_to_speak)
-                    engine.runAndWait()
+                    engine = pyttsx3.init()
+                    print("Fallback TTS engine initialized (default)")
+                except Exception as e2:
+                    print(f"Default init also failed: {e2}")
+                    return
+            
+            # Set properties and verify
+            engine.setProperty('rate', self.tts_rate)
+            engine.setProperty('volume', self.tts_volume)
+            actual_volume = engine.getProperty('volume')
+            print(f"Fallback TTS - Volume set to: {actual_volume}")
+            
+            # Test with a simple message first
+            print("Testing fallback TTS with text...")
+            engine.say(text_to_speak)
+            print("Calling runAndWait()...")
+            engine.runAndWait()
+            print("Fallback TTS completed successfully")
+            
+            # Don't stop immediately - give audio time to finish
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"Fallback TTS Error: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            if engine:
+                try:
+                    # Only stop if we're sure audio is done
+                    time.sleep(0.2)
                     engine.stop()
-                except Exception as e:
+                except:
                     pass
-                finally:
-                    if engine:
-                        try:
-                            engine.stop()
-                        except:
-                            pass
 
     def check_audio_level(self, audio_data):
         #checking the volume level of audio data
@@ -1081,18 +1258,33 @@ class OfflineMode:
         self.speak(greeting)
         
         # Wait for greeting TTS to complete before starting to listen
-        # Use time-based wait to avoid hangs
+        # Wait for queue to be empty AND give time for audio to finish
         greeting_text = greeting
-        estimated_speech_time = max(2.0, len(greeting_text.split()) * 0.4)
-        wait_time = min(estimated_speech_time + 1.0, 6.0)  # Cap at 6 seconds for greeting
+        estimated_speech_time = max(3.0, len(greeting_text.split()) * 0.4)  # More realistic estimate
+        max_wait_time = min(estimated_speech_time + 2.0, 8.0)  # Cap at 8 seconds
         
         start_wait = time.time()
-        while time.time() - start_wait < wait_time:
-            if not (self._tts_thread and self._tts_thread.is_alive()):
-                break
-            time.sleep(0.2)
+        queue_empty_time = None
         
-        # Small additional delay to ensure audio is fully ready
+        while time.time() - start_wait < max_wait_time:
+            queue_size = self._tts_queue.qsize()
+            
+            if queue_size == 0:
+                if queue_empty_time is None:
+                    queue_empty_time = time.time()
+                
+                # Queue is empty, but wait a bit more to ensure audio finishes playing
+                if queue_empty_time and (time.time() - queue_empty_time) >= 1.5:
+                    # Queue has been empty for 1.5s, audio should be done
+                    print("Greeting TTS completed, ready to listen")
+                    break
+            else:
+                # Queue not empty yet, reset the empty timer
+                queue_empty_time = None
+            
+            time.sleep(0.1)
+        
+        # Additional delay to ensure audio is fully ready and not interfering with mic
         time.sleep(0.5)
 
         conversation_ended_naturally = False
@@ -1130,26 +1322,36 @@ class OfflineMode:
                     # Wait for TTS queue to be empty AND ensure worker has finished processing
                     # This prevents audio conflicts where TTS is still playing when we start listening
                     if self._last_spoken_text:
-                        estimated_speech_time = max(1.5, len(self._last_spoken_text.split()) * 0.35)  # Faster estimate
-                        max_wait_time = min(estimated_speech_time + 1.0, 8.0)  # Cap at 8 seconds
+                        estimated_speech_time = max(2.0, len(self._last_spoken_text.split()) * 0.4)  # More realistic estimate
+                        max_wait_time = min(estimated_speech_time + 2.0, 10.0)  # Cap at 10 seconds, give more time
                     else:
-                        max_wait_time = 3.0
+                        max_wait_time = 4.0
                     
                     # Wait for queue to be empty AND give a bit more time for audio to finish
                     start_wait = time.time()
                     queue_empty_time = None
+                    last_queue_size = self._tts_queue.qsize()
+                    
+                    print(f"Waiting for TTS to complete (queue size: {last_queue_size})...")
                     
                     while time.time() - start_wait < max_wait_time:
                         queue_size = self._tts_queue.qsize()
                         
+                        # Log if queue size changes
+                        if queue_size != last_queue_size:
+                            print(f"TTS queue size changed: {last_queue_size} -> {queue_size}")
+                            last_queue_size = queue_size
+                        
                         if queue_size == 0:
                             if queue_empty_time is None:
                                 queue_empty_time = time.time()
+                                print("TTS queue is now empty, waiting for audio to finish...")
                             
                             # Queue is empty, but wait a bit more to ensure audio finishes playing
                             # This prevents cutting off the audio when we start listening
-                            if queue_empty_time and (time.time() - queue_empty_time) >= 0.8:
-                                # Queue has been empty for 0.8s, audio should be done
+                            if queue_empty_time and (time.time() - queue_empty_time) >= 1.5:
+                                # Queue has been empty for 1.5s, audio should be done
+                                print("TTS audio should be complete, ready to listen")
                                 break
                         else:
                             # Queue not empty yet, reset the empty timer
@@ -1157,17 +1359,20 @@ class OfflineMode:
                         
                         time.sleep(0.1)
                     
+                    # Check worker health - restart if dead
+                    if self._tts_worker_thread and not self._tts_worker_thread.is_alive():
+                        print("WARNING: TTS worker thread died! Restarting...")
+                        self._start_tts_worker()
+                        time.sleep(0.3)
+                    
                     # Additional delay after TTS completes to ensure audio resources are fully released
                     # This prevents conflicts when starting to listen
-                    time.sleep(0.3)
+                    time.sleep(0.5)
                     
-                    # Check worker health
-                    if self._tts_worker_thread and not self._tts_worker_thread.is_alive():
-                        self._start_tts_worker()
-                        time.sleep(0.2)
-                    
-                    # Small additional delay to ensure audio system is ready
-                    time.sleep(0.15)
+                    # Final check - if queue still has items, something is wrong
+                    final_queue_size = self._tts_queue.qsize()
+                    if final_queue_size > 0:
+                        print(f"WARNING: TTS queue still has {final_queue_size} items after wait!")
                     
                 except Exception as cmd_error:
                     import traceback

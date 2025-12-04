@@ -9,7 +9,7 @@
         "id": 2,
         "text": "Call dad",
         "time": "2025-12-03T09:00:00",
-        "active": true
+        "active": false
     },
     {
         "id": 3,
@@ -21,6 +21,108 @@
         "id": 4,
         "text": "call my dad for",
         "time": "2025-12-03T15:00:00",
+        "active": true
+    },
+    {
+        "id": 5,
+        "text": "call dad for",
+        "time": "2025-12-04T09:00:00",
+        "active": true
+    },
+    {
+        "id": 6,
+        "text": "Call Dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 7,
+        "text": "Take medication",
+        "time": "2025-12-04T17:00:00",
+        "active": true
+    },
+    {
+        "id": 8,
+        "text": "so i reminded to call dad for",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 9,
+        "text": "that's fine indicates of the key from dokdo bad wolves 1 home friend ships' doorhead or 1 \u05dc\u05e2ama before hole-hunt strat\u00e9gian\uc871 \u0445\u043e\u0440\u043e\u0448\u043e",
+        "time": "2025-12-05T09:00:00",
+        "active": true
+    },
+    {
+        "id": 10,
+        "text": "i don't mind if it's tall so i don't mind if it's to call",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 11,
+        "text": "so i wanted to call that with rupym",
+        "time": "2025-12-04T09:00:00",
+        "active": true
+    },
+    {
+        "id": 12,
+        "text": "so i'll monitor to call dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 13,
+        "text": "ok set the timer for to call dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 14,
+        "text": "superminer for to call dad",
+        "time": "2025-12-03T15:00:00",
+        "active": true
+    },
+    {
+        "id": 15,
+        "text": "Call dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 16,
+        "text": "so you're a minor for to call dad",
+        "time": "2025-12-03T15:00:00",
+        "active": true
+    },
+    {
+        "id": 17,
+        "text": "so i'll remind her for call dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 18,
+        "text": "so that i remember to call dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 19,
+        "text": "Call my dad",
+        "time": "2025-12-04T16:00:00",
+        "active": true
+    },
+    {
+        "id": 20,
+        "text": "call dad",
+        "time": "2025-12-04T15:00:00",
+        "active": true
+    },
+    {
+        "id": 21,
+        "text": "Call Dad",
+        "time": "2025-12-04T15:00:00",
         "active": true
     }
 ]
